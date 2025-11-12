@@ -27,6 +27,14 @@ from torch.cuda.amp import GradScaler, autocast
 from utils import DiceLoss
 from val_3D import test_all_case
 
+# Optional Weights & Biases (wandb) integration
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except Exception:
+    wandb = None
+    _WANDB_AVAILABLE = False
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
 parser.add_argument('--exp', type=str, default='ISLES24-Unet', help='experiment_name')
@@ -40,6 +48,21 @@ parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+
+def _tensor_to_image(grid_tensor):
+    # grid_tensor: CPU tensor [C,H,W], values in [0,1] or arbitrary; convert to HWC uint8
+    grid_np = grid_tensor.detach().cpu().numpy()
+    if grid_np.ndim == 3:
+        grid_np = np.transpose(grid_np, (1, 2, 0))  # HWC
+    else:
+        grid_np = grid_np
+    # normalize to 0-255
+    grid_min = grid_np.min()
+    grid_max = grid_np.max()
+    if grid_max > grid_min:
+        grid_np = (grid_np - grid_min) / (grid_max - grid_min)
+    grid_np = (grid_np * 255.0).astype(np.uint8)
+    return grid_np
 
 def train(args, snapshot_path):
     base_lr = args.base_lr
@@ -78,6 +101,13 @@ def train(args, snapshot_path):
     scaler = GradScaler()
     model.cuda()
 
+    # Optional: watch model gradients and parameters with wandb
+    if _WANDB_AVAILABLE:
+        try:
+            wandb.watch(model, log='all', log_freq=100)
+        except Exception:
+            pass
+
     for epoch_num in iterator:
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
@@ -103,13 +133,22 @@ def train(args, snapshot_path):
 
             iter_num = iter_num + 1
             writer.add_scalar('info/lr', lr_, iter_num)
-            writer.add_scalar('info/total_loss', loss, iter_num)
             writer.add_scalar('info/loss_dice', loss_dice, iter_num)
 
+            # log to wandb if available
+            if _WANDB_AVAILABLE:
+                try:
+                    wandb.log({
+                        'lr': lr_,
+                        'train/loss_dice': loss_dice.item()
+                    }, step=iter_num)
+                except Exception:
+                    pass
+
             logging.info(
-                'iteration %d : loss : %f, loss_dice: %f' %
-                (iter_num, loss.item(), loss_dice.item()))
-            writer.add_scalar('loss/loss', loss, iter_num)
+                'iteration %d : loss_dice: %f' %
+                (iter_num, loss_dice.item()))
+            writer.add_scalar('loss/loss_dice', loss_dice, iter_num)
 
             if iter_num % 20 == 0:
                 image = volume_batch[0, 0:1, :, :, 20:61:10].permute(
@@ -119,15 +158,25 @@ def train(args, snapshot_path):
 
                 image = outputs_soft[0, 1:2, :, :, 20:61:10].permute(
                     3, 0, 1, 2).repeat(1, 3, 1, 1)
-                grid_image = make_grid(image, 5, normalize=False)
+                grid_pred = make_grid(image, 5, normalize=False)
                 writer.add_image('train/Predicted_label',
-                                 grid_image, iter_num)
+                                 grid_pred, iter_num)
 
                 image = label_batch[0, :, :, 20:61:10].unsqueeze(
                     0).permute(3, 0, 1, 2).repeat(1, 3, 1, 1)
-                grid_image = make_grid(image, 5, normalize=False)
+                grid_label = make_grid(image, 5, normalize=False)
                 writer.add_image('train/Groundtruth_label',
-                                 grid_image, iter_num)
+                                 grid_label, iter_num)
+
+                if _WANDB_AVAILABLE:
+                    try:
+                        wandb.log({
+                            'train/Image': wandb.Image(_tensor_to_image(grid_image)),
+                            'train/Predicted_label': wandb.Image(_tensor_to_image(grid_pred)),
+                            'train/Groundtruth_label': wandb.Image(_tensor_to_image(grid_label))
+                        }, step=iter_num)
+                    except Exception:
+                        pass
 
             if iter_num > 0 and iter_num % 200 == 0:
                 model.eval()
@@ -139,10 +188,26 @@ def train(args, snapshot_path):
                     save_best = os.path.join(snapshot_path,'best_model.pth')
                     torch.save(model.state_dict(), save_mode_path)
                     torch.save(model.state_dict(), save_best)
+                    if _WANDB_AVAILABLE:
+                        try:
+                            wandb.save(save_mode_path)
+                            wandb.save(save_best)
+                        except Exception:
+                            pass
 
                 writer.add_scalar('info/val_dice_score',avg_metric[0, 0], iter_num)
                 writer.add_scalar('info/val_hd95', avg_metric[0, 1], iter_num)
                 logging.info('iteration %d : dice_score : %f hd95 : %f' % (iter_num, avg_metric[0, 0].mean(), avg_metric[0, 1].mean()))
+
+                if _WANDB_AVAILABLE:
+                    try:
+                        wandb.log({
+                            'val/dice_score': float(avg_metric[0, 0].mean()),
+                            'val/hd95': float(avg_metric[0, 1].mean())
+                        }, step=iter_num)
+                    except Exception:
+                        pass
+
                 model.train()
 
             if iter_num % 3000 == 0:
@@ -150,6 +215,11 @@ def train(args, snapshot_path):
                     snapshot_path, 'iter_' + str(iter_num) + '.pth')
                 torch.save(model.state_dict(), save_mode_path)
                 logging.info("save model to {}".format(save_mode_path))
+                if _WANDB_AVAILABLE:
+                    try:
+                        wandb.save(save_mode_path)
+                    except Exception:
+                        pass
 
             if iter_num >= max_iterations:
                 break
@@ -186,4 +256,18 @@ if __name__ == "__main__":
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
+
+    # Initialize Weights & Biases (optional)
+    if _WANDB_AVAILABLE:
+        try:
+            wandb.init(project=args.exp, name=f"{args.exp}_seed{args.seed}", config=vars(args), reinit=True)
+        except Exception:
+            pass
+
     train(args, snapshot_path)
+
+    if _WANDB_AVAILABLE:
+        try:
+            wandb.finish()
+        except Exception:
+            pass
