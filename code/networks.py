@@ -14,6 +14,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
 
+
+## base UNet 3D model
 class unet_3D(nn.Module):
 
     def __init__(self, feature_scale=4, n_classes=2, is_deconv=True, in_channels=6, is_batchnorm=True):
@@ -96,6 +98,88 @@ class unet_3D(nn.Module):
 
         return log_p
     
+
+## 3D Unet with clinical data fusion in the bottleneck
+class ClinicalMLP(nn.Module):
+    def __init__(self, in_features, embedding_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_features, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, embedding_dim),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class UNet3D_withClinical(nn.Module):
+    def __init__(self, 
+                 feature_scale=4, n_classes=2, in_channels=6, 
+                 is_deconv=True, is_batchnorm=True,
+                 clinical_in_features=40,  # number of features from tabular data
+                 clinical_emb_dim=128):
+        super().__init__()
+
+        self.unet = unet_3D(
+            feature_scale=feature_scale,
+            n_classes=n_classes,
+            in_channels=in_channels,
+            is_deconv=is_deconv,
+            is_batchnorm=is_batchnorm
+        )
+
+        # MLP branch for clinical features
+        self.clinical_mlp = ClinicalMLP(clinical_in_features, clinical_emb_dim)
+
+        # After bottleneck, we'll expand the clinical embedding spatially
+        filters = [64, 128, 256, 512, 1024]
+        filters = [int(x / feature_scale) for x in filters]
+        self.proj = nn.Linear(clinical_emb_dim, filters[-1])
+
+    def forward(self, img, clinical_vec):
+        # Run UNet encoder manually to access bottleneck
+        conv1 = self.unet.conv1(img)
+        maxpool1 = self.unet.maxpool1(conv1)
+
+        conv2 = self.unet.conv2(maxpool1)
+        maxpool2 = self.unet.maxpool2(conv2)
+
+        conv3 = self.unet.conv3(maxpool2)
+        maxpool3 = self.unet.maxpool3(conv3)
+
+        conv4 = self.unet.conv4(maxpool3)
+        maxpool4 = self.unet.maxpool4(conv4)
+
+        center = self.unet.center(maxpool4)
+
+        # ----- Clinical fusion -----
+        clinical_emb = self.clinical_mlp(clinical_vec)          # [B, clinical_emb_dim]
+        clinical_emb = self.proj(clinical_emb)                  # [B, C_center]
+        # reshape and broadcast to spatial dims
+        B, C, D, H, W = center.shape
+        clinical_emb = clinical_emb.view(B, C, 1, 1, 1).expand(B, C, D, H, W)
+        # fuse (concatenate)
+        center_fused = torch.cat([center, clinical_emb], dim=1)
+
+        # project back to center channels
+        fuse_proj = nn.Conv3d(center_fused.shape[1], center.shape[1], kernel_size=1).to(center.device)
+        center = fuse_proj(center_fused)
+        # ---------------------------
+
+        center = self.unet.dropout1(center)
+        up4 = self.unet.up_concat4(conv4, center)
+        up3 = self.unet.up_concat3(conv3, up4)
+        up2 = self.unet.up_concat2(conv2, up3)
+        up1 = self.unet.up_concat1(conv1, up2)
+        up1 = self.unet.dropout2(up1)
+
+        final = self.unet.final(up1)
+        return final
+
+
 
 def weights_init_normal(m):
     classname = m.__class__.__name__

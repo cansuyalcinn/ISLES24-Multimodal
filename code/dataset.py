@@ -64,9 +64,14 @@ class ISLES24(Dataset):
             else:
                 raise KeyError(f"No 'label' or 'gt' dataset found in {h5_path}")
 
-        sample = {'image': image, 'label': label.astype(np.uint8)}
+        # extract patient id from filename (robust to full paths)
+        base_name = os.path.basename(image_name)
+        patient_id = base_name.split('_')[0] if isinstance(base_name, str) else None
+
+        sample = {'image': image, 'label': label.astype(np.uint8), 'patient_id': patient_id}
         if self.transform:
             sample = self.transform(sample)
+        # keep original idx for backward compatibility
         sample["idx"] = idx
 
         return sample

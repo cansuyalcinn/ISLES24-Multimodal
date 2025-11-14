@@ -1,7 +1,7 @@
 # ISLES24-Multimodal
 Multimodal tabular data + vision experiments in ISLES24 challenge dataset. 
 
-1. 3D UNet (plain model)
+1. 3D UNet (plain model) (ok)
 - Inputs 6 images
 + Output: binary segmentation
 
