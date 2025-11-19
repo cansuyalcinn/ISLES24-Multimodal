@@ -37,6 +37,7 @@ parser.add_argument('--base_lr', type=float,  default=0.01, help='segmentation n
 parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
+parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -56,7 +57,7 @@ def train(args, snapshot_path):
                              RandomCrop(args.patch_size),
                              ToTensor(),
                          ]),
-                         )
+                         fold=args.fold)
 
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
@@ -131,7 +132,8 @@ def train(args, snapshot_path):
 
             if iter_num > 0 and iter_num % 200 == 0:
                 model.eval()
-                avg_metric = test_all_case(model, args.root_path, test_list="val_files.txt", num_classes=2, patch_size=args.patch_size, stride_xy=64, stride_z=64)
+                test_list = f'fold_{args.fold}_val_files.txt' if args.fold is not None else 'val_files.txt'
+                avg_metric = test_all_case(model, args.root_path, test_list=test_list, num_classes=2, patch_size=args.patch_size, stride_xy=64, stride_z=64)
                 
                 if avg_metric[:, 0].mean() > best_performance:
                     best_performance = avg_metric[:, 0].mean()
@@ -174,7 +176,7 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     # combine exp and labeled_num
-    snapshot_path = "../model/{}".format(args.exp)
+    snapshot_path = "../model/{}/Fold_{}".format(args.exp, args.fold)
 
     # add seed_number to snapshot path
     snapshot_path = os.path.join(snapshot_path)

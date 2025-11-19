@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
+from collections import OrderedDict
 
 
 ## base UNet 3D model
@@ -168,6 +169,136 @@ class UNet3D_withClinical(nn.Module):
         fuse_proj = nn.Conv3d(center_fused.shape[1], center.shape[1], kernel_size=1).to(center.device)
         center = fuse_proj(center_fused)
         # ---------------------------
+
+        center = self.unet.dropout1(center)
+        up4 = self.unet.up_concat4(conv4, center)
+        up3 = self.unet.up_concat3(conv3, up4)
+        up2 = self.unet.up_concat2(conv2, up3)
+        up1 = self.unet.up_concat1(conv1, up2)
+        up1 = self.unet.dropout2(up1)
+
+        final = self.unet.final(up1)
+        return final
+
+
+class DAFTBlock(nn.Module):
+    """Simplified DAFT-style block: produces FiLM-like scale and shift
+    parameters from global-pooled image features concatenated with a
+    tabular/clinical vector and applies them to the incoming feature map.
+
+    This is a compact adaptation inspired by the DAFT repository for use
+    within this codebase.
+    """
+    def __init__(self,
+                 in_channels:int,
+                 ndim_non_img:int=15,
+                 bottleneck_dim:int=7,
+                 scale:bool=True,
+                 shift:bool=True,
+                 bn_momentum:float=0.1):
+        super().__init__()
+        self.in_channels = in_channels
+        self.ndim_non_img = ndim_non_img
+        self.bottleneck_dim = bottleneck_dim
+        self.scale = scale
+        self.shift = shift
+
+        # film_dims equals number of channels to modulate
+        self.film_dims = in_channels
+        aux_input_dims = self.film_dims
+
+        # if both scale and shift we output 2*film_dims
+        self.out_dims = self.film_dims * (2 if (scale and shift) else 1)
+
+        # aux MLP: input is [global pooled image features + tabular]
+        self.global_pool = nn.AdaptiveAvgPool3d(1)
+        self.aux = nn.Sequential(OrderedDict([
+            ("aux_base", nn.Linear(self.ndim_non_img + aux_input_dims, self.bottleneck_dim, bias=False)),
+            ("aux_relu", nn.ReLU()),
+            ("aux_out", nn.Linear(self.bottleneck_dim, self.out_dims, bias=False)),
+        ]))
+
+        # optional activations for scale (identity here; replace if needed)
+        self.scale_activation = None
+
+    def forward(self, feature_map:torch.Tensor, x_aux:torch.Tensor):
+        """feature_map: [B, C, D, H, W], x_aux: [B, ndim_non_img]
+        returns modulated feature_map of same shape
+        """
+        B = feature_map.size(0)
+        # squeeze image features
+        squeeze = self.global_pool(feature_map).view(B, -1)
+        # concat with tabular vector
+        if x_aux is None:
+            x_aux = torch.zeros(B, self.ndim_non_img, device=feature_map.device, dtype=feature_map.dtype)
+        x_cat = torch.cat([squeeze, x_aux], dim=1)
+        attention = self.aux(x_cat)  # [B, out_dims]
+
+        if self.scale and self.shift:
+            v_scale, v_shift = torch.split(attention, self.film_dims, dim=1)
+            v_scale = v_scale.view(B, self.film_dims, 1, 1, 1).expand_as(feature_map)
+            v_shift = v_shift.view(B, self.film_dims, 1, 1, 1).expand_as(feature_map)
+            if self.scale_activation is not None:
+                v_scale = self.scale_activation(v_scale)
+        elif self.scale and not self.shift:
+            v_scale = attention.view(B, self.film_dims, 1, 1, 1).expand_as(feature_map)
+            v_shift = 0.0
+            if self.scale_activation is not None:
+                v_scale = self.scale_activation(v_scale)
+        elif self.shift and not self.scale:
+            v_scale = 1.0
+            v_shift = attention.view(B, self.film_dims, 1, 1, 1).expand_as(feature_map)
+        else:
+            # nothing to do
+            return feature_map
+
+        return (v_scale * feature_map) + v_shift
+
+
+class UNet3D_withClinical_DAFT(nn.Module):
+    """UNet that applies a DAFT-style modulation block at the bottleneck.
+
+    This class reuses the encoder/decoder from the existing `unet_3D`
+    but replaces the simple concat/projection fusion with the DAFTBlock.
+    """
+    def __init__(self, feature_scale=4, n_classes=2, in_channels=6, is_deconv=True, is_batchnorm=True,
+                 clinical_in_features=15, daft_bottleneck_dim=7):
+        super().__init__()
+        self.unet = unet_3D(feature_scale=feature_scale, n_classes=n_classes, in_channels=in_channels,
+                            is_deconv=is_deconv, is_batchnorm=is_batchnorm)
+
+        # determine center channels used by unet
+        filters = [64, 128, 256, 512, 1024]
+        filters = [int(x / feature_scale) for x in filters]
+        center_channels = filters[-1]
+
+        # DAFT block will modulate `center_channels`
+        self.daft_block = DAFTBlock(in_channels=center_channels,
+                                    ndim_non_img=max(1, clinical_in_features),
+                                    bottleneck_dim=daft_bottleneck_dim,
+                                    scale=True, shift=True)
+
+        # small conv to ensure channel compatibility in case we want to change dims later
+        self.project_back = nn.Conv3d(center_channels, center_channels, kernel_size=1)
+
+    def forward(self, img, clinical_vec):
+        conv1 = self.unet.conv1(img)
+        maxpool1 = self.unet.maxpool1(conv1)
+
+        conv2 = self.unet.conv2(maxpool1)
+        maxpool2 = self.unet.maxpool2(conv2)
+
+        conv3 = self.unet.conv3(maxpool2)
+        maxpool3 = self.unet.maxpool3(conv3)
+
+        conv4 = self.unet.conv4(maxpool3)
+        maxpool4 = self.unet.maxpool4(conv4)
+
+        center = self.unet.center(maxpool4)
+
+        # apply DAFT modulation using clinical vector
+        center = self.daft_block(center, clinical_vec)
+        center = self.project_back(center)
 
         center = self.unet.dropout1(center)
         up4 = self.unet.up_concat4(conv4, center)

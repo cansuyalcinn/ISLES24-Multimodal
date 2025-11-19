@@ -4,7 +4,7 @@ import shutil
 from glob import glob
 import torch
 from test_3D_util import test_all_case
-from networks import unet_3D, UNet3D_withClinical
+from networks import unet_3D, UNet3D_withClinical, UNet3D_withClinical_DAFT
 import pandas as pd
 import numpy as np
 import argparse
@@ -16,6 +16,7 @@ parser.add_argument('--gpu', type=str, default='0', help='CUDA_VISIBLE_DEVICES')
 parser.add_argument('--read_mode', type=str, default='test_files.txt', help='what to do test on')
 parser.add_argument('--model', type=str, default='unet_3D', help='model_name')
 parser.add_argument('--clinical', action='store_true', help='Enable clinical model evaluation (UNet3D_withClinical)')
+parser.add_argument('--daft', action='store_true', help='Enable DAFT model evaluation (UNet3D_withClinical_DAFT)')
 parser.add_argument('--clinical_file', type=str, default=None, help='Path to clinical_tabular_processed.xlsx -- /media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx')
 
 def Inference(FLAGS):
@@ -58,7 +59,11 @@ def Inference(FLAGS):
                 print(f"Failed to load clinical file: {e}")
                 clinical_map = None
 
-        net = UNet3D_withClinical(n_classes=num_classes, in_channels=6, clinical_in_features=max(1, clinical_dim)).cuda()
+        if FLAGS.daft:
+            net = UNet3D_withClinical_DAFT(n_classes=num_classes, in_channels=6, clinical_in_features=max(1, clinical_dim)).cuda()
+        else:
+            net = UNet3D_withClinical(n_classes=num_classes, in_channels=6, clinical_in_features=max(1, clinical_dim)).cuda()
+
     else:
         net = unet_3D(n_classes=num_classes, in_channels=6).cuda()
 

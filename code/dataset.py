@@ -9,32 +9,41 @@ from scipy import ndimage
 import random
 
 class ISLES24(Dataset):
-    """ ISLES24 Dataset """
+    """ ISLES24 Dataset
 
-    def __init__(self, base_dir=None, split='train', transform=None):
+    Now supports an optional `fold` argument. If `fold` is provided the
+    dataset will look for split files named `fold_{fold}_{split}_files.txt`
+    inside the `splits/` folder. If the fold-specific file does not exist
+    it falls back to the legacy `{split}_files.txt`.
+    """
+
+    def __init__(self, base_dir=None, split='train', transform=None, fold: int = None):
         self._base_dir = base_dir
         self.transform = transform
         self.sample_list = []
 
-        if split == 'train':
-            path = self._base_dir + f'/splits/train_files.txt'
-            with open(path, 'r') as f:
-                self.image_list = f.readlines()
-
-        elif split == 'val':
-            path = self._base_dir + f'/splits/val_files.txt'
-            with open(path, 'r') as f:
-                self.image_list = f.readlines()
-
-        elif split == 'test':
-            path = self._base_dir + f'/splits/test_files.txt'
-            with open(path, 'r') as f:
-                self.image_list = f.readlines()
+        # build candidate path for split files
+        splits_dir = os.path.join(self._base_dir, 'splits')
+        if fold is not None:
+            candidate = os.path.join(splits_dir, f'fold_{fold}_{split}_files.txt')
+            if os.path.exists(candidate):
+                path = candidate
+                print(f"Using fold {fold} split file: {os.path.basename(path)}")
+            else:
+                # fallback to legacy name
+                path = os.path.join(splits_dir, f'{split}_files.txt')
+                print(f"Fold-specific file not found ({candidate}). Falling back to {os.path.basename(path)}")
         else:
-            raise ValueError(f"Unsupported split: {split}. Only 'train' is supported.")
+            path = os.path.join(splits_dir, f'{split}_files.txt')
 
-        self.image_list = [item.replace('\n', '').split(",")[0] for item in self.image_list]
-        print("Total {} samples in training set.".format(len(self.image_list)))
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Split file not found: {path}")
+
+        with open(path, 'r') as f:
+            self.image_list = f.readlines()
+
+        self.image_list = [item.replace('\n', '').split(',')[0] for item in self.image_list]
+        print("Total {} samples in {} set.".format(len(self.image_list), split))
 
     def __len__(self):
         return len(self.image_list)
@@ -47,7 +56,7 @@ class ISLES24(Dataset):
             image_name = self.image_list[idx]
 
         # open h5 file safely and read datasets
-        h5_path = os.path.join(self._base_dir, "h5_files", image_name)
+        h5_path = os.path.join(self._base_dir, "h5_files_preprocessed", image_name)
         with h5py.File(h5_path, 'r') as h5f:
             # support files that use either 'data' or 'image' as the image dataset name
             if 'data' in h5f:
