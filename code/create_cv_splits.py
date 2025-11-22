@@ -16,7 +16,6 @@ import os
 import random
 from glob import glob
 
-
 def main(data_dir: str, k: int = 5, seed: int = 1337):
     # prefer preprocessed h5 files (created by preprocess_and_save_h5.py)
     h5_dir = os.path.join(data_dir, 'h5_files_preprocessed')

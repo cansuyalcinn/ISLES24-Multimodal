@@ -47,7 +47,6 @@ parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patc
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
 parser.add_argument('--knockout_prob', type=float, default=0.2, help='Probability to randomly knockout (mask) each observed clinical feature during training')
-parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -110,7 +109,7 @@ def train(args, snapshot_path):
                              RandomCrop(args.patch_size),
                              ToTensor(),
                          ]),
-                         fold=args.fold)
+                         )
 
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
@@ -273,8 +272,7 @@ def train(args, snapshot_path):
                 except Exception:
                     clinical_map_np = clinical_map if clinical_map is not None else None
 
-                test_list = f'fold_{args.fold}_val_files.txt' if args.fold is not None else 'val_files.txt'
-                avg_metric = test_all_case(model, args.root_path, test_list=test_list, num_classes=2, 
+                avg_metric = test_all_case(model, args.root_path, test_list="val_files.txt", num_classes=2, 
                                            patch_size=args.patch_size, stride_xy=64, stride_z=64, clinical=True, clinical_map=clinical_map_np)
                 
                 if avg_metric[:, 0].mean() > best_performance:
@@ -339,7 +337,7 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     # combine exp and labeled_num
-    snapshot_path = "../model/{}/Fold_{}".format(args.exp, args.fold)
+    snapshot_path = "../model/{}".format(args.exp)
 
     # add seed_number to snapshot path
     snapshot_path = os.path.join(snapshot_path)

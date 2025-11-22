@@ -215,7 +215,7 @@ def main(paths_raw: str, paths_deriv: str, out_dir: str, workers: int = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--paths_raw', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/train/raw_data')
-    parser.add_argument('--paths_derivatives', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/train/derivatives')
+    parser.add_argument('--paths_derivatives', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/raw/derivatives')
     parser.add_argument('--out_dir', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data')
     parser.add_argument('--workers', type=int, default=None)
     args = parser.parse_args()
