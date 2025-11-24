@@ -32,9 +32,11 @@ from val_3D import test_all_case
 try:
     import wandb
     _WANDB_AVAILABLE = True
+    print("Weights & Biases (wandb) is available.")
 except Exception:
     wandb = None
     _WANDB_AVAILABLE = False
+    print("Weights & Biases (wandb) is not available.")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='/home/cansu/ISLES24-Multimodal/data', help='Name of Experiment')
