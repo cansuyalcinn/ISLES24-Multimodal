@@ -37,7 +37,7 @@ except Exception:
     _WANDB_AVAILABLE = False
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
+parser.add_argument('--root_path', type=str, default='/home/cansu/ISLES24-Multimodal/data', help='Name of Experiment')
 parser.add_argument('--exp', type=str, default='ISLES24-Unet_DF', help='experiment_name')
 parser.add_argument('--max_iterations', type=int, default=30000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
@@ -78,6 +78,7 @@ def train(args, snapshot_path):
     # --- load preprocessed clinical tabular data ---
     clinical_file = os.path.join(train_data_path, 'clinical_tabular_processed.xlsx')
     if os.path.exists(clinical_file):
+        print(f"Loading clinical data from {clinical_file}...")
         try:
             clin_df = pd.read_excel(clinical_file)
             if 'patient_id' in clin_df.columns:

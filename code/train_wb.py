@@ -36,7 +36,7 @@ except Exception:
     _WANDB_AVAILABLE = False
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
+parser.add_argument('--root_path', type=str, default='/home/cansu/ISLES24-Multimodal/data', help='Name of Experiment')
 parser.add_argument('--exp', type=str, default='ISLES24-Unet', help='experiment_name')
 parser.add_argument('--max_iterations', type=int, default=30000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')

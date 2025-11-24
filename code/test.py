@@ -10,14 +10,14 @@ import numpy as np
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
+parser.add_argument('--root_path', type=str, default='/home/cansu/ISLES24-Multimodal/data', help='Name of Experiment')
 parser.add_argument('--exp', type=str, default='ISLES24-Unet', help='experiment_name')
 parser.add_argument('--gpu', type=str, default='0', help='CUDA_VISIBLE_DEVICES')
 parser.add_argument('--read_mode', type=str, default='test_files.txt', help='what to do test on')
 parser.add_argument('--model', type=str, default='unet_3D', help='model_name')
 parser.add_argument('--clinical', action='store_true', help='Enable clinical model evaluation (UNet3D_withClinical)')
 parser.add_argument('--daft', action='store_true', help='Enable DAFT model evaluation (UNet3D_withClinical_DAFT)')
-parser.add_argument('--clinical_file', type=str, default=None, help='Path to clinical_tabular_processed.xlsx -- /media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx')
+parser.add_argument('--clinical_file', type=str, default='/home/cansu/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx', help='Path to clinical_tabular_processed.xlsx -- /media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx')
 parser.add_argument('--fold', type=str, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 
