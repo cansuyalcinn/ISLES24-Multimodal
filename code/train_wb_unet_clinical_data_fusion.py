@@ -274,8 +274,9 @@ def train(args, snapshot_path):
                     clinical_map_np = {k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else np.array(v)) for k, v in clinical_map.items()}
                 except Exception:
                     clinical_map_np = clinical_map if clinical_map is not None else None
-
-                avg_metric = test_all_case(model, args.root_path, test_list="val_files.txt", num_classes=2, 
+                    
+                test_list = f'fold_{args.fold}_val_files.txt' if args.fold is not None else 'val_files.txt'
+                avg_metric = test_all_case(model, args.root_path, test_list=test_list, num_classes=2, 
                                            patch_size=args.patch_size, stride_xy=64, stride_z=64, clinical=True, clinical_map=clinical_map_np)
                 
                 if avg_metric[:, 0].mean() > best_performance:
