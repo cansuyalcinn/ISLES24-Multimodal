@@ -18,24 +18,27 @@ parser.add_argument('--model', type=str, default='unet_3D', help='model_name')
 parser.add_argument('--clinical', action='store_true', help='Enable clinical model evaluation (UNet3D_withClinical)')
 parser.add_argument('--daft', action='store_true', help='Enable DAFT model evaluation (UNet3D_withClinical_DAFT)')
 parser.add_argument('--clinical_file', type=str, default=None, help='Path to clinical_tabular_processed.xlsx -- /media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx')
+parser.add_argument('--fold', type=str, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 
 def Inference(FLAGS):
 
     os.environ['CUDA_VISIBLE_DEVICES'] = FLAGS.gpu
 
     num_classes = 2
+    # ensure clinical_map is always defined so it's safe to pass to test_all_case
+    clinical_map = None
 
-    if FLAGS.read_mode == 'test_files.txt':
-        mode = 'test'
-    elif FLAGS.read_mode == 'val_files.txt':
-        mode = 'val'
-    elif FLAGS.read_mode == 'train_files.txt':
-        mode = 'train'
+    mode = 'test'
+    # Determine which split list to use. If a fold is provided, look for fold_{fold}_{read_mode}
+    if FLAGS.fold is not None:
+        test_files = f'fold_{FLAGS.fold}_{FLAGS.read_mode}'
+        snapshot_path = "../model/{}/Fold_{}/".format(FLAGS.exp, FLAGS.fold)
+        test_save_path = "../model/{}/Fold_{}/Prediction_{}".format(FLAGS.exp, FLAGS.fold,  mode)
     else:
-        raise ValueError('read_mode should be test_files.txt, val_files.txt or train_files.txt')
-
-    snapshot_path = "../model/{}/".format(FLAGS.exp)
-    test_save_path = "../model/{}/Prediction_{}".format(FLAGS.exp, mode)
+        test_files = FLAGS.read_mode
+        # when fold not provided, fall back to generic model folder
+        snapshot_path = "../model/{}/".format(FLAGS.exp)
+        test_save_path = "../model/{}/Prediction_{}".format(FLAGS.exp, mode)
 
     if os.path.exists(test_save_path):
         shutil.rmtree(test_save_path)
@@ -43,6 +46,11 @@ def Inference(FLAGS):
     os.makedirs(test_save_path)
 
     save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
+
+    # Verify split file exists under the provided root path
+    split_path = os.path.join(FLAGS.root_path, 'splits', test_files)
+    if not os.path.exists(split_path):
+        raise FileNotFoundError(f"Split file not found: {split_path}. Please create splits or pass --read_mode accordingly.")
 
     if FLAGS.clinical:
         # load clinical mapping to determine input dim
@@ -60,18 +68,18 @@ def Inference(FLAGS):
                 clinical_map = None
 
         if FLAGS.daft:
-            net = UNet3D_withClinical_DAFT(n_classes=num_classes, in_channels=6, clinical_in_features=max(1, clinical_dim)).cuda()
+            net = UNet3D_withClinical_DAFT(n_classes=num_classes, in_channels=5, clinical_in_features=max(1, clinical_dim)).cuda()
         else:
-            net = UNet3D_withClinical(n_classes=num_classes, in_channels=6, clinical_in_features=max(1, clinical_dim)).cuda()
+            net = UNet3D_withClinical(n_classes=num_classes, in_channels=5, clinical_in_features=max(1, clinical_dim)).cuda()
 
     else:
-        net = unet_3D(n_classes=num_classes, in_channels=6).cuda()
+        net = unet_3D(n_classes=num_classes, in_channels=5).cuda()
 
     net.load_state_dict(torch.load(save_mode_path))
     print("init weight from {}".format(save_mode_path))
     net.eval()
 
-    avg_metric = test_all_case(net, base_dir=FLAGS.root_path, test_list=FLAGS.read_mode, num_classes=num_classes,
+    avg_metric = test_all_case(net, base_dir=FLAGS.root_path, test_list=test_files, num_classes=num_classes,
                                patch_size=(96, 96, 96), stride_xy=64, stride_z=64, test_save_path=test_save_path, model=FLAGS.model,
                                clinical=FLAGS.clinical, clinical_map=clinical_map, clinical_file=FLAGS.clinical_file)
     return avg_metric, mode
@@ -80,7 +88,7 @@ def Inference(FLAGS):
 if __name__ == '__main__':
     FLAGS = parser.parse_args()
     metric, mode = Inference(FLAGS)
-    test_save_path = "../model/{}".format(FLAGS.exp)
+    test_save_path = "../model/{}/Fold_{}/".format(FLAGS.exp, FLAGS.fold)
     # save it as a txt file
     if not os.path.exists(test_save_path):
         os.makedirs(test_save_path)
