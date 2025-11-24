@@ -24,7 +24,7 @@ from dataset import (ISLES24, CenterCrop, RandomCrop,
 from networks import UNet3D_withClinical_DAFT
 import pandas as pd
 # from val_3D import test_all_case
-from torch.cuda.amp import GradScaler, autocast
+# AMP not used: no autocast context, so remove GradScaler import
 from utils import DiceLoss
 from val_3D import test_all_case
 
@@ -123,7 +123,6 @@ def train(args, snapshot_path):
     max_epoch = max_iterations // len(trainloader) + 1
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
-    scaler = GradScaler()
     model.cuda()
 
     if _WANDB_AVAILABLE:
@@ -186,9 +185,9 @@ def train(args, snapshot_path):
             loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
             loss = loss_dice
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # plain backward/step without AMP scaling (no autocast used)
+            loss.backward()
+            optimizer.step()
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
             for param_group in optimizer.param_groups:
@@ -296,7 +295,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    snapshot_path = "../model/{}/Fold_{}".format(args.exp, args.fold)
+    snapshot_path = "../model/{}/Fold_{}/seed_{}".format(args.exp, args.fold, args.seed)
     snapshot_path = os.path.join(snapshot_path)
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
@@ -309,7 +308,7 @@ if __name__ == "__main__":
     # Initialize Weights & Biases (optional)
     if _WANDB_AVAILABLE:
         try:
-            wandb.init(project=args.exp, name=f"{args.exp}_seed{args.seed}", config=vars(args), reinit=True)
+            wandb.init(project=args.exp, name=f"{args.exp}_fold{args.fold}_seed{args.seed}", config=vars(args), reinit=True)
         except Exception:
             pass
 

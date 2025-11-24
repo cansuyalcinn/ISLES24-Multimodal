@@ -19,6 +19,7 @@ parser.add_argument('--clinical', action='store_true', help='Enable clinical mod
 parser.add_argument('--daft', action='store_true', help='Enable DAFT model evaluation (UNet3D_withClinical_DAFT)')
 parser.add_argument('--clinical_file', type=str, default=None, help='Path to clinical_tabular_processed.xlsx -- /media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx')
 parser.add_argument('--fold', type=str, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
+parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 
 def Inference(FLAGS):
 
@@ -32,8 +33,8 @@ def Inference(FLAGS):
     # Determine which split list to use. If a fold is provided, look for fold_{fold}_{read_mode}
     if FLAGS.fold is not None:
         test_files = f'fold_{FLAGS.fold}_{FLAGS.read_mode}'
-        snapshot_path = "../model/{}/Fold_{}/".format(FLAGS.exp, FLAGS.fold)
-        test_save_path = "../model/{}/Fold_{}/Prediction_{}".format(FLAGS.exp, FLAGS.fold,  mode)
+        snapshot_path = "../model/{}/Fold_{}/seed_{}".format(FLAGS.exp, FLAGS.fold, FLAGS.seed)
+        test_save_path = "../model/{}/Fold_{}/seed_{}/Prediction_{}".format(FLAGS.exp, FLAGS.fold, FLAGS.seed, mode)
     else:
         test_files = FLAGS.read_mode
         # when fold not provided, fall back to generic model folder
@@ -88,7 +89,7 @@ def Inference(FLAGS):
 if __name__ == '__main__':
     FLAGS = parser.parse_args()
     metric, mode = Inference(FLAGS)
-    test_save_path = "../model/{}/Fold_{}/".format(FLAGS.exp, FLAGS.fold)
+    test_save_path = "../model/{}/Fold_{}/seed_{}/".format(FLAGS.exp, FLAGS.fold, FLAGS.seed)
     # save it as a txt file
     if not os.path.exists(test_save_path):
         os.makedirs(test_save_path)

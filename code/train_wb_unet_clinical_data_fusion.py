@@ -24,7 +24,7 @@ from dataset import (ISLES24, CenterCrop, RandomCrop,
 from networks import UNet3D_withClinical
 import pandas as pd
 # from val_3D import test_all_case
-from torch.cuda.amp import GradScaler, autocast
+# not using AMP autocast -> remove GradScaler/amp usage
 from utils import DiceLoss
 from val_3D import test_all_case
 
@@ -47,6 +47,7 @@ parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patc
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
 parser.add_argument('--knockout_prob', type=float, default=0.2, help='Probability to randomly knockout (mask) each observed clinical feature during training')
+parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -100,7 +101,7 @@ def train(args, snapshot_path):
         clinical_map = {}
         clinical_dim = 0
 
-    model = UNet3D_withClinical(in_channels=6, n_classes=num_classes, clinical_in_features=max(1, clinical_dim))
+    model = UNet3D_withClinical(in_channels=5, n_classes=num_classes, clinical_in_features=max(1, clinical_dim))
 
     db_train = ISLES24(base_dir=train_data_path,
                          split='train',
@@ -109,7 +110,7 @@ def train(args, snapshot_path):
                              RandomCrop(args.patch_size),
                              ToTensor(),
                          ]),
-                         )
+                         fold=args.fold)
 
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
@@ -128,7 +129,6 @@ def train(args, snapshot_path):
     max_epoch = max_iterations // len(trainloader) + 1
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
-    scaler = GradScaler()
     model.cuda()
 
     # Optional: watch model gradients and parameters with wandb
@@ -209,9 +209,9 @@ def train(args, snapshot_path):
 
             loss = loss_dice
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # plain backward/step without AMP scaling (no autocast used)
+            loss.backward()
+            optimizer.step()
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
             for param_group in optimizer.param_groups:
@@ -336,10 +336,8 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    # combine exp and labeled_num
-    snapshot_path = "../model/{}".format(args.exp)
-
-    # add seed_number to snapshot path
+    # include fold and seed in snapshot path so logs/models are separated per run
+    snapshot_path = "../model/{}/Fold_{}/seed_{}".format(args.exp, args.fold, args.seed)
     snapshot_path = os.path.join(snapshot_path)
 
     if not os.path.exists(snapshot_path):
@@ -353,7 +351,7 @@ if __name__ == "__main__":
     # Initialize Weights & Biases (optional)
     if _WANDB_AVAILABLE:
         try:
-            wandb.init(project=args.exp, name=f"{args.exp}_seed{args.seed}", config=vars(args), reinit=True)
+            wandb.init(project=args.exp, name=f"{args.exp}_fold{args.fold}_seed{args.seed}", config=vars(args), reinit=True)
         except Exception:
             pass
 

@@ -23,7 +23,7 @@ from dataset import (ISLES24, CenterCrop, RandomCrop,
                                    RandomRotFlip, ToTensor)
 from networks import unet_3D
 # from val_3D import test_all_case
-from torch.cuda.amp import GradScaler, autocast
+# AMP not used: no autocast context, so remove GradScaler import
 from utils import DiceLoss
 from val_3D import test_all_case
 
@@ -76,7 +76,6 @@ def train(args, snapshot_path):
     max_epoch = max_iterations // len(trainloader) + 1
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
-    scaler = GradScaler()
     model.cuda()
 
     for epoch_num in iterator:
@@ -94,9 +93,9 @@ def train(args, snapshot_path):
 
             loss = loss_dice
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # plain backward/step without AMP scaling (no autocast used)
+            loss.backward()
+            optimizer.step()
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
             for param_group in optimizer.param_groups:
@@ -175,10 +174,8 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    # combine exp and labeled_num
-    snapshot_path = "../model/{}/Fold_{}".format(args.exp, args.fold)
-
-    # add seed_number to snapshot path
+    # include fold and seed in snapshot path so logs/models are separated per run
+    snapshot_path = "../model/{}/Fold_{}/seed_{}".format(args.exp, args.fold, args.seed)
     snapshot_path = os.path.join(snapshot_path)
 
     if not os.path.exists(snapshot_path):
