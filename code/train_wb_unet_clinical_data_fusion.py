@@ -12,7 +12,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
+# removed mixed-precision (autocast/GradScaler) for simpler deterministic training
 from tensorboardX import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
@@ -40,7 +40,7 @@ except Exception:
     print("Weights & Biases (wandb) is not available.")
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str, default='/home/cansu/ISLES24-Multimodal/data', help='Name of Experiment')
+parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
 parser.add_argument('--exp', type=str, default='ISLES24-Unet_DF', help='experiment_name')
 parser.add_argument('--max_iterations', type=int, default=30000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
@@ -134,8 +134,7 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
-    # mixed precision scaler
-    scaler = GradScaler()
+    # mixed precision removed: use standard FP32 training
 
     # Optional: watch model gradients and parameters with wandb
     if _WANDB_AVAILABLE:
@@ -206,18 +205,15 @@ def train(args, snapshot_path):
 
             optimizer.zero_grad()
 
-            # forward + loss under autocast for mixed precision
-            with autocast():
-                outputs = model(volume_batch, clinical_batch)
-                outputs_soft = torch.softmax(outputs, dim=1)
-                # loss_ce = ce_loss(outputs, label_batch)
-                loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
-                loss = loss_dice
+            outputs = model(volume_batch, clinical_batch)
+            outputs_soft = torch.softmax(outputs, dim=1)
+            # loss_ce = ce_loss(outputs, label_batch)
+            loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
+            loss = loss_dice
 
-            # scale the loss, backprop and step via the GradScaler
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # backprop and optimizer step (FP32)
+            loss.backward()
+            optimizer.step()
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
             for param_group in optimizer.param_groups:
