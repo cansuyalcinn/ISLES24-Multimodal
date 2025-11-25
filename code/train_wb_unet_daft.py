@@ -12,6 +12,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from tensorboardX import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
@@ -124,6 +125,8 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
+    # mixed precision scaler
+    scaler = GradScaler()
 
     if _WANDB_AVAILABLE:
         try:
@@ -179,15 +182,16 @@ def train(args, snapshot_path):
             clinical_batch = torch.stack(clinical_batch_list, dim=0).cuda()
 
             optimizer.zero_grad()
-            outputs = model(volume_batch, clinical_batch)
 
-            outputs_soft = torch.softmax(outputs, dim=1)
-            loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
-            loss = loss_dice
+            with autocast():
+                outputs = model(volume_batch, clinical_batch)
+                outputs_soft = torch.softmax(outputs, dim=1)
+                loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
+                loss = loss_dice
 
-            # plain backward/step without AMP scaling (no autocast used)
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
             for param_group in optimizer.param_groups:
