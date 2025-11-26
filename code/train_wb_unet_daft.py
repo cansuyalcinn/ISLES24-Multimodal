@@ -22,10 +22,10 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 from dataset import (ISLES24, CenterCrop, RandomCrop,
                                    RandomRotFlip, ToTensor)
-from networks import UNet3D_withClinical_DAFT
+from networks import UNet3D_Clinical_DAFT
 import pandas as pd
 # from val_3D import test_all_case
-# AMP not used: no autocast context, so remove GradScaler import
+# not using AMP autocast -> remove GradScaler/amp usage
 from utils import DiceLoss
 from val_3D import test_all_case
 
@@ -33,13 +33,15 @@ from val_3D import test_all_case
 try:
     import wandb
     _WANDB_AVAILABLE = True
+    print("Weights & Biases (wandb) is available.")
 except Exception:
     wandb = None
     _WANDB_AVAILABLE = False
+    print("Weights & Biases (wandb) is not available.")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
-parser.add_argument('--exp', type=str, default='ISLES24-Unet_DAFT', help='experiment_name')
+parser.add_argument('--exp', type=str, default='ISLES24-Unet_DF', help='experiment_name')
 parser.add_argument('--max_iterations', type=int, default=30000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
@@ -54,16 +56,19 @@ args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 def _tensor_to_image(grid_tensor):
+    # grid_tensor: CPU tensor [C,H,W], values in [0,1] or arbitrary; convert to HWC uint8
     grid_np = grid_tensor.detach().cpu().numpy()
     if grid_np.ndim == 3:
-        grid_np = np.transpose(grid_np, (1, 2, 0))
+        grid_np = np.transpose(grid_np, (1, 2, 0))  # HWC
+    else:
+        grid_np = grid_np
+    # normalize to 0-255
     grid_min = grid_np.min()
     grid_max = grid_np.max()
     if grid_max > grid_min:
         grid_np = (grid_np - grid_min) / (grid_max - grid_min)
     grid_np = (grid_np * 255.0).astype(np.uint8)
     return grid_np
-
 
 def train(args, snapshot_path):
     base_lr = args.base_lr
@@ -76,16 +81,20 @@ def train(args, snapshot_path):
     # --- load preprocessed clinical tabular data ---
     clinical_file = os.path.join(train_data_path, 'clinical_tabular_processed.xlsx')
     if os.path.exists(clinical_file):
+        print(f"Loading clinical data from {clinical_file}...")
         try:
             clin_df = pd.read_excel(clinical_file)
             if 'patient_id' in clin_df.columns:
                 clin_df = clin_df.set_index('patient_id')
 
+            # detect mask columns (those ending with '_mask') and value columns
             all_cols = list(clin_df.columns)
             mask_cols = [c for c in all_cols if str(c).endswith('_mask')]
             value_cols = [c for c in all_cols if c not in mask_cols]
             n_value_feats = len(value_cols)
             clinical_dim = len(all_cols)
+
+            # build a mapping patient_id -> numpy array (values followed by masks)
             clinical_map = {str(idx): row.values.astype(np.float32) for idx, row in clin_df.iterrows()}
         except Exception as e:
             print(f"Failed to load clinical file '{clinical_file}': {e}")
@@ -96,7 +105,7 @@ def train(args, snapshot_path):
         clinical_map = {}
         clinical_dim = 0
 
-    model = UNet3D_withClinical_DAFT(in_channels=6, n_classes=num_classes, clinical_in_features=max(1, clinical_dim))
+    model = UNet3D_Clinical_DAFT(in_channels=5, n_classes=num_classes, clinical_in_features=max(1, clinical_dim))
 
     db_train = ISLES24(base_dir=train_data_path,
                          split='train',
@@ -127,6 +136,7 @@ def train(args, snapshot_path):
     model.cuda()
     # mixed precision removed: use standard FP32 training
 
+    # Optional: watch model gradients and parameters with wandb
     if _WANDB_AVAILABLE:
         try:
             wandb.watch(model, log='all', log_freq=100)
@@ -138,16 +148,20 @@ def train(args, snapshot_path):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
 
-            # clinical batch prepare (reuse pattern from other script)
+            # --- prepare clinical vector batch ---
+            # sampled_batch['idx'] may be a list/tensor of indices or filenames
             idx_field = sampled_batch.get('idx', None)
             batch_filenames = []
             if idx_field is None:
+                # fallback: try to recover from trainloader image_list using i_batch
                 batch_filenames = [db_train.image_list[i_batch]]
             else:
+                # normalize to python list
                 if isinstance(idx_field, torch.Tensor):
                     idx_list = idx_field.cpu().tolist()
                 else:
                     idx_list = idx_field
+                # if idx_list is a scalar make it a list
                 if not isinstance(idx_list, (list, tuple)):
                     idx_list = [idx_list]
                 for it in idx_list:
@@ -155,39 +169,49 @@ def train(args, snapshot_path):
                         fn = db_train.image_list[it]
                     else:
                         fn = str(it)
+                    # ensure we only have the filename (not full path)
+                    # some entries might be 'sub-stroke0001_ses-01_all_modalities.h5'
                     batch_filenames.append(os.path.basename(fn))
 
+            # derive patient ids from filenames (assumes 'sub-strokeXXXX_...' pattern)
             clinical_batch_list = []
             for fn in batch_filenames:
                 pid = fn.split('_')[0] if fn is not None else None
-                if pid is not None and pid in clinical_map and clinical_dim > 0:
-                    arr = clinical_map[pid]
+
+                if pid is not None and pid in clinical_map and clinical_dim > 0: # found clinical data
+                    arr = clinical_map[pid]  # numpy array length clinical_dim: [values..., masks...]
                     vals = torch.from_numpy(arr[:n_value_feats].copy()).float()
                     masks = torch.from_numpy(arr[n_value_feats:].copy()).float() if (clinical_dim - n_value_feats) > 0 else torch.ones_like(vals)
+
+                    # apply knockout augmentation only during training
                     p = args.knockout_prob
                     if p > 0.0:
+                        # only candidate features that were originally observed (mask==1)
                         can_knock = masks == 1.0
                         if can_knock.any():
                             rand = torch.rand_like(vals)
                             knock = (rand < p) & can_knock
                             if knock.any():
-                                vals[knock] = -10.0
+                                vals[knock] = -10.0  # sentinel for missing
                                 masks[knock] = 0.0
+
                     combined = torch.cat([vals, masks], dim=0)
                     clinical_batch_list.append(combined)
                 else:
+                    # fallback zero vector if missing or clinical not available
                     clinical_batch_list.append(torch.zeros(max(1, clinical_dim), dtype=torch.float32))
 
             clinical_batch = torch.stack(clinical_batch_list, dim=0).cuda()
 
             optimizer.zero_grad()
 
-            # standard FP32 forward/backward
             outputs = model(volume_batch, clinical_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
+            # loss_ce = ce_loss(outputs, label_batch)
             loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
             loss = loss_dice
 
+            # backprop and optimizer step (FP32)
             loss.backward()
             optimizer.step()
 
@@ -199,47 +223,61 @@ def train(args, snapshot_path):
             writer.add_scalar('info/lr', lr_, iter_num)
             writer.add_scalar('info/loss_dice', loss_dice, iter_num)
 
+            # log to wandb if available
             if _WANDB_AVAILABLE:
                 try:
-                    wandb.log({'lr': lr_, 'train/loss_dice': loss_dice.item()}, step=iter_num)
+                    wandb.log({
+                        'lr': lr_,
+                        'train/loss_dice': loss_dice.item()
+                    }, step=iter_num)
                 except Exception:
                     pass
 
-            logging.info('iteration %d : loss_dice: %f' % (iter_num, loss_dice.item()))
+            logging.info(
+                'iteration %d : loss_dice: %f' %
+                (iter_num, loss_dice.item()))
             writer.add_scalar('loss/loss_dice', loss_dice, iter_num)
 
             if iter_num % 20 == 0:
-                image = volume_batch[0, 0:1, :, :, 20:61:10].permute(3, 0, 1, 2).repeat(1, 3, 1, 1)
+                image = volume_batch[0, 0:1, :, :, 20:61:10].permute(
+                    3, 0, 1, 2).repeat(1, 3, 1, 1)
                 grid_image = make_grid(image, 5, normalize=True)
                 writer.add_image('train/Image', grid_image, iter_num)
 
-                image = outputs_soft[0, 1:2, :, :, 20:61:10].permute(3, 0, 1, 2).repeat(1, 3, 1, 1)
+                image = outputs_soft[0, 1:2, :, :, 20:61:10].permute(
+                    3, 0, 1, 2).repeat(1, 3, 1, 1)
                 grid_pred = make_grid(image, 5, normalize=False)
-                writer.add_image('train/Predicted_label', grid_pred, iter_num)
+                writer.add_image('train/Predicted_label',
+                                 grid_pred, iter_num)
 
-                image = label_batch[0, :, :, 20:61:10].unsqueeze(0).permute(3, 0, 1, 2).repeat(1, 3, 1, 1)
+                image = label_batch[0, :, :, 20:61:10].unsqueeze(
+                    0).permute(3, 0, 1, 2).repeat(1, 3, 1, 1)
                 grid_label = make_grid(image, 5, normalize=False)
-                writer.add_image('train/Groundtruth_label', grid_label, iter_num)
+                writer.add_image('train/Groundtruth_label',
+                                 grid_label, iter_num)
 
                 if _WANDB_AVAILABLE:
                     try:
-                        wandb.log({'train/Image': wandb.Image(_tensor_to_image(grid_image)),
-                                   'train/Predicted_label': wandb.Image(_tensor_to_image(grid_pred)),
-                                   'train/Groundtruth_label': wandb.Image(_tensor_to_image(grid_label))}, step=iter_num)
+                        wandb.log({
+                            'train/Image': wandb.Image(_tensor_to_image(grid_image)),
+                            'train/Predicted_label': wandb.Image(_tensor_to_image(grid_pred)),
+                            'train/Groundtruth_label': wandb.Image(_tensor_to_image(grid_label))
+                        }, step=iter_num)
                     except Exception:
                         pass
 
             if iter_num > 0 and iter_num % 200 == 0:
                 model.eval()
+                # prepare clinical map for the validator (convert tensors to numpy)
                 try:
                     clinical_map_np = {k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else np.array(v)) for k, v in clinical_map.items()}
                 except Exception:
                     clinical_map_np = clinical_map if clinical_map is not None else None
-
+                    
                 test_list = f'fold_{args.fold}_val_files.txt' if args.fold is not None else 'val_files.txt'
                 avg_metric = test_all_case(model, args.root_path, test_list=test_list, num_classes=2, 
                                            patch_size=args.patch_size, stride_xy=64, stride_z=64, clinical=True, clinical_map=clinical_map_np)
-
+                
                 if avg_metric[:, 0].mean() > best_performance:
                     best_performance = avg_metric[:, 0].mean()
                     save_mode_path = os.path.join(snapshot_path, 'iter_{}_dice_{}.pth'.format(iter_num, round(best_performance, 4)))
@@ -259,14 +297,18 @@ def train(args, snapshot_path):
 
                 if _WANDB_AVAILABLE:
                     try:
-                        wandb.log({'val/dice_score': float(avg_metric[0, 0].mean()), 'val/hd95': float(avg_metric[0, 1].mean())}, step=iter_num)
+                        wandb.log({
+                            'val/dice_score': float(avg_metric[0, 0].mean()),
+                            'val/hd95': float(avg_metric[0, 1].mean())
+                        }, step=iter_num)
                     except Exception:
                         pass
 
                 model.train()
 
             if iter_num % 3000 == 0:
-                save_mode_path = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '.pth')
+                save_mode_path = os.path.join(
+                    snapshot_path, 'iter_' + str(iter_num) + '.pth')
                 torch.save(model.state_dict(), save_mode_path)
                 logging.info("save model to {}".format(save_mode_path))
                 if _WANDB_AVAILABLE:
@@ -297,8 +339,10 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
+    # include fold and seed in snapshot path so logs/models are separated per run
     snapshot_path = "../model/{}/Fold_{}/seed_{}".format(args.exp, args.fold, args.seed)
     snapshot_path = os.path.join(snapshot_path)
+
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
 
