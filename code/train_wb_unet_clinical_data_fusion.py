@@ -49,7 +49,6 @@ parser.add_argument('--base_lr', type=float,  default=0.01, help='segmentation n
 parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
-parser.add_argument('--knockout_prob', type=float, default=0.2, help='Probability to randomly knockout (mask) each observed clinical feature during training')
 parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 
 args = parser.parse_args()
@@ -183,17 +182,26 @@ def train(args, snapshot_path):
                     vals = torch.from_numpy(arr[:n_value_feats].copy()).float()
                     masks = torch.from_numpy(arr[n_value_feats:].copy()).float() if (clinical_dim - n_value_feats) > 0 else torch.ones_like(vals)
 
-                    # apply knockout augmentation only during training
-                    p = args.knockout_prob
-                    if p > 0.0:
-                        # only candidate features that were originally observed (mask==1)
-                        can_knock = masks == 1.0
-                        if can_knock.any():
-                            rand = torch.rand_like(vals)
-                            knock = (rand < p) & can_knock
-                            if knock.any():
-                                vals[knock] = -10.0  # sentinel for missing
-                                masks[knock] = 0.0
+                    # only observed features may be knocked out
+                    observed_idx = torch.where(masks == 1.0)[0]
+                    num_obs = len(observed_idx)
+
+                    if num_obs > 0:
+                        # sample per-patient dropout ratio
+                        p = torch.rand(1).item()  # random number in [0,1]
+                        
+                        # compute number of features to drop
+                        num_drop = max(1, int(p * num_obs))  # drop at least 1
+                        
+                        # randomly pick exactly num_drop features among observed ones
+                        # torch.randperm(n) generates a random permutation of the integers from 0 to n-1, with no repeats. shuffle the indices
+                        perm = torch.randperm(num_obs)
+
+                        drop_idx = observed_idx[perm[:num_drop]]
+
+                        # apply knockout
+                        vals[drop_idx] = -10.0
+                        masks[drop_idx] = 0.0
 
                     combined = torch.cat([vals, masks], dim=0)
                     clinical_batch_list.append(combined)
