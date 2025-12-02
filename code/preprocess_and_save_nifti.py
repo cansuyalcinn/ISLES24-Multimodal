@@ -23,6 +23,7 @@ from typing import Dict, Tuple
 import nibabel as nib
 import numpy as np
 from skimage import exposure
+import warnings
 import h5py
 
 
@@ -56,6 +57,48 @@ def apply_histogram_equalization_custom_range(input_file: str, output_file: str,
     nib.save(out_img, output_file)
 
 
+def percentile_window_and_znorm(arr: np.ndarray) -> np.ndarray:
+    """Apply [1,99] percentile windowing and nnUNet-style z-normalization.
+
+    Steps:
+    - Compute mask of non-zero voxels
+    - Compute p1,p99 over non-zero voxels; clip values to [p1,p99]
+    - Compute mean/std over non-zero voxels and z-normalize (v-mean)/std on non-zero voxels
+    - Leave zeros as zero
+    """
+    data = arr.astype(np.float32)
+    mask = data != 0
+    if not np.any(mask):
+        return data
+
+    # compute percentiles on non-zero voxels
+    try:
+        p1, p99 = np.percentile(data[mask], (1, 99))
+    except Exception:
+        # fallback
+        p1, p99 = data[mask].min(), data[mask].max()
+
+    if p99 <= p1:
+        # nothing to window
+        clipped = data
+    else:
+        clipped = data.copy()
+        clipped[mask] = np.clip(clipped[mask], p1, p99)
+
+    # compute mean/std over non-zero voxels (after clipping)
+    nz = clipped != 0
+    if not np.any(nz):
+        return clipped
+    mean = float(clipped[nz].mean())
+    std = float(clipped[nz].std())
+    if std < 1e-6:
+        std = 1.0
+
+    zn = clipped.copy()
+    zn[nz] = (zn[nz] - mean) / std
+    return zn
+
+
 def process_patient(patient_name: str, paths_raw: str, paths_deriv: str, out_dir: str, intensity_ranges: Dict[str, Tuple[float, float]]) -> Tuple[str, bool, str]:
     """Process one patient: preprocess modalities and save combined HDF5.
 
@@ -83,10 +126,17 @@ def process_patient(patient_name: str, paths_raw: str, paths_deriv: str, out_dir
         for mod, _ in modalities:
             os.makedirs(os.path.join(preproc_root, mod), exist_ok=True)
 
-        # process each modality
+        # process each modality and save as NIfTI in inputs/<modality>/
         modality_arrays = []
         ref_shape = None
+        key_map = {'cbf': '0000', 'cbv': '0001', 'mtt': '0002', 'tmax': '0003', 'cta': '0004'}
         for idx, (mod, path) in enumerate(modalities):
+            # Special-case override for sub-stroke0043: use provided absolute CBF file
+            if patient_name == 'sub-stroke0043' and mod == 'cbf':
+                override_path = '/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/sub-stroke0043_ses-01_space-ncct_cbf.nii.gz'
+                if os.path.exists(override_path):
+                    path = override_path
+
             if not os.path.exists(path):
                 return (patient_name, False, f'Missing modality file: {path}')
 
@@ -94,8 +144,6 @@ def process_patient(patient_name: str, paths_raw: str, paths_deriv: str, out_dir
 
             # apply histogram equalization with custom ranges if provided
             rng = None
-            # mapping by modality name to intensity_ranges keys used in notebook: 0000..0004
-            key_map = {'cbf': '0000', 'cbv': '0001', 'mtt': '0002', 'tmax': '0003', 'cta': '0004'}
             if key_map.get(mod) in intensity_ranges:
                 rng = intensity_ranges[key_map[mod]]
 
@@ -103,10 +151,21 @@ def process_patient(patient_name: str, paths_raw: str, paths_deriv: str, out_dir
                 # skip processing if already exists
                 if not os.path.exists(out_nii):
                     apply_histogram_equalization_custom_range(path, out_nii, rng[0], rng[1])
+                    # then apply percentile windowing + z-normalization and overwrite
+                    nii = nib.load(out_nii)
+                    arr = nii.get_fdata().astype(np.float32)
+                    arr = percentile_window_and_znorm(arr)
+                    out_img = nib.Nifti1Image(arr.astype(np.float32), nii.affine, nii.header)
+                    nib.save(out_img, out_nii)
             else:
-                # copy raw file if no range specified
+                # if no intensity range specified, just copy raw and then apply percentile+znorm
                 if not os.path.exists(out_nii):
                     shutil.copy(path, out_nii)
+                    nii = nib.load(out_nii)
+                    arr = nii.get_fdata().astype(np.float32)
+                    arr = percentile_window_and_znorm(arr)
+                    out_img = nib.Nifti1Image(arr.astype(np.float32), nii.affine, nii.header)
+                    nib.save(out_img, out_nii)
 
             # load preprocessed nii to array
             nii = nib.load(out_nii)
@@ -136,13 +195,15 @@ def process_patient(patient_name: str, paths_raw: str, paths_deriv: str, out_dir
         # stack modalities into array with channel-first ordering (C, D, H, W)
         data_stack = np.stack(modality_arrays, axis=0).astype(np.float32)
 
-        # write HDF5
-        h5_path = os.path.join(h5_out_root, f'{patient_name}_ses-01_all_modalities.h5')
-        with h5py.File(h5_path, 'w') as hf:
-            hf.create_dataset('data', data=data_stack, compression='gzip')
-            hf.create_dataset('label', data=gt_arr.astype(np.uint8), compression='gzip')
+        # save label as NIfTI under labels/
+        labels_dir = os.path.join(out_dir, 'labels')
+        os.makedirs(labels_dir, exist_ok=True)
+        label_out = os.path.join(labels_dir, f'{patient_name}_label.nii.gz')
+        # preserve original affine/header from gt_nii
+        out_label_img = nib.Nifti1Image(gt_arr.astype(np.uint8), gt_nii.affine, gt_nii.header)
+        nib.save(out_label_img, label_out)
 
-        return (patient_name, True, f'Wrote {h5_path}')
+        return (patient_name, True, f'Wrote NIfTIs under {preproc_root} and label {label_out}')
 
     except Exception as e:
         return (patient_name, False, str(e))
@@ -215,7 +276,7 @@ def main(paths_raw: str, paths_deriv: str, out_dir: str, workers: int = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--paths_raw', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/train/raw_data')
-    parser.add_argument('--paths_derivatives', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/raw/derivatives')
+    parser.add_argument('--paths_derivatives', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/train/derivatives')
     parser.add_argument('--out_dir', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data')
     parser.add_argument('--workers', type=int, default=None)
     args = parser.parse_args()

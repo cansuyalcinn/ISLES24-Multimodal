@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from glob import glob
 from torch.utils.data import Dataset
-import h5py
+import nibabel as nib
 from scipy.ndimage.interpolation import zoom
 from scipy import ndimage
 import random
@@ -54,28 +54,47 @@ class ISLES24(Dataset):
             image_name = idx
         else:
             image_name = self.image_list[idx]
-
-        # open h5 file safely and read datasets
-        h5_path = os.path.join(self._base_dir, "h5_files_preprocessed", image_name)
-        with h5py.File(h5_path, 'r') as h5f:
-            # support files that use either 'data' or 'image' as the image dataset name
-            if 'data' in h5f:
-                image = h5f['data'][:]
-            elif 'image' in h5f:
-                image = h5f['image'][:]
-            else:
-                raise KeyError(f"No 'data' or 'image' dataset found in {h5_path}")
-
-            if 'label' in h5f:
-                label = h5f['label'][:]
-            elif 'gt' in h5f:
-                label = h5f['gt'][:]
-            else:
-                raise KeyError(f"No 'label' or 'gt' dataset found in {h5_path}")
-
-        # extract patient id from filename (robust to full paths)
+        # derive patient id from the split entry (supports filenames or bare ids)
         base_name = os.path.basename(image_name)
-        patient_id = base_name.split('_')[0] if isinstance(base_name, str) else None
+        name = base_name
+        for ext in ('.h5', '.nii.gz', '.nii', '.gz'):
+            if name.endswith(ext):
+                name = name[: -len(ext)]
+        patient_id = name.split('_')[0]
+
+        # load preprocessed nifti modalities (expecting 5 modalities: cbf, cbv, mtt, tmax, cta)
+        modalities = ['cbf', 'cbv', 'mtt', 'tmax', 'cta']
+        mod_arrays = []
+        for mod in modalities:
+            mod_path = os.path.join(self._base_dir, 'preprocessed_data', mod, f'{patient_id}_{mod}.nii.gz')
+            if not os.path.exists(mod_path):
+                # try alternative common name with ses-01 token
+                alt = os.path.join(self._base_dir, 'preprocessed_data', mod, f'{patient_id}_ses-01_{mod}.nii.gz')
+                if os.path.exists(alt):
+                    mod_path = alt
+                else:
+                    raise FileNotFoundError(f"Missing modality file for patient {patient_id}: {mod_path}")
+
+            nii = nib.load(mod_path)
+            arr = nii.get_fdata().astype(np.float32)
+            # ensure 3D shape (D,H,W)
+            if arr.ndim == 4 and arr.shape[0] == 1:
+                arr = np.squeeze(arr, axis=0)
+            mod_arrays.append(arr)
+
+        # stack into (C, D, H, W)
+        try:
+            image = np.stack(mod_arrays, axis=0).astype(np.float32)
+        except Exception as e:
+            raise RuntimeError(f"Failed to stack modality arrays for {patient_id}: {e}")
+
+        # load label nifti
+        label_path = os.path.join(self._base_dir, 'labels', f'{patient_id}_label.nii.gz')
+        if not os.path.exists(label_path):
+            raise FileNotFoundError(f"Label NIfTI not found for {patient_id}: {label_path}")
+        
+        gt_nii = nib.load(label_path)
+        label = gt_nii.get_fdata().astype(np.uint8)
 
         sample = {'image': image, 'label': label.astype(np.uint8), 'patient_id': patient_id}
         if self.transform:

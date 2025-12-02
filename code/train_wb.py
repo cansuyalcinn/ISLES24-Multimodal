@@ -43,7 +43,7 @@ parser.add_argument('--max_iterations', type=int, default=30000, help='maximum e
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
 parser.add_argument('--base_lr', type=float,  default=0.01, help='segmentation network learning rate')
-parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patch size of network input')
+parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patch size of network input (D, H, W)')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
 parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
@@ -101,6 +101,8 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
+    # start training timer
+    start_time = time.time()
     # mixed precision removed: use standard FP32 training
 
     # Optional: watch model gradients and parameters with wandb
@@ -227,6 +229,20 @@ def train(args, snapshot_path):
         if iter_num >= max_iterations:
             iterator.close()
             break
+    # record elapsed time and save to snapshot
+    end_time = time.time()
+    elapsed = end_time - start_time
+    hrs = int(elapsed // 3600)
+    mins = int((elapsed % 3600) // 60)
+    secs = int(elapsed % 60)
+    time_str = f"{hrs}h {mins}m {secs}s ({elapsed:.2f} sec)"
+    logging.info(f"Total training time: {time_str}")
+    try:
+        with open(os.path.join(snapshot_path, 'train_time.txt'), 'w') as tf:
+            tf.write(f"Total training time: {time_str}\nSeconds: {elapsed:.2f}\n")
+    except Exception:
+        logging.exception('Failed to write train_time.txt')
+
     writer.close()
     return "Training Finished!"
 
