@@ -27,6 +27,7 @@ from networks import unet_3D
 # AMP not used: no autocast context, so remove GradScaler import
 from utils import DiceLoss
 from val_3D import test_all_case
+from torch.cuda.amp import autocast, GradScaler
 
 # Optional Weights & Biases (wandb) integration
 try:
@@ -43,7 +44,7 @@ parser.add_argument('--max_iterations', type=int, default=30000, help='maximum e
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
 parser.add_argument('--base_lr', type=float,  default=0.01, help='segmentation network learning rate')
-parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patch size of network input (D, H, W)')
+parser.add_argument('--patch_size', type=int, nargs=3, default=[96, 96, 96],help='patch size of network input (D, H, W)')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
 parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
@@ -101,6 +102,9 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
+
+    # scaler = GradScaler(enabled=args.autocast)
+
     # start training timer
     start_time = time.time()
     # mixed precision removed: use standard FP32 training

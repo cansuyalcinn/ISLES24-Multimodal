@@ -152,7 +152,7 @@ def test_all_case(net, base_dir, test_list="full_test.list",
     with open(base_dir + '/splits' + '/{}'.format(test_list), 'r') as f:
         image_list = f.readlines()
 
-    image_list = [base_dir + "/h5_files_preprocessed/{}".format( item.replace('\n', '').split(",")[0]) for item in image_list]
+    image_list = [base_dir + "/h5_files_preprocessed_no_znorm/{}".format( item.replace('\n', '').split(",")[0]) for item in image_list]
 
     total_metric = np.zeros((num_classes-1, 2))
 

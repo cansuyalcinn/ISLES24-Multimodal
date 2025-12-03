@@ -27,6 +27,7 @@ import pandas as pd
 # from val_3D import test_all_case
 # not using AMP autocast -> remove GradScaler/amp usage
 from utils import DiceLoss
+from torch.cuda.amp import autocast, GradScaler
 from val_3D import test_all_case
 
 # Optional Weights & Biases (wandb) integration
@@ -51,6 +52,8 @@ parser.add_argument('--seed', type=int,  default=1337, help='random seed for the
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
 parser.add_argument('--knockout_prob', type=float, default=0.2, help='Probability to randomly knockout (mask) each observed clinical feature during training')
 parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
+parser.add_argument('--autocast', action='store_true',
+                    help='Enable PyTorch AMP mixed-precision training')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -134,9 +137,10 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
-    # mixed precision removed: use standard FP32 training
 
-    # Optional: watch model gradients and parameters with wandb
+    if args.autocast:
+        scaler = GradScaler()
+
     if _WANDB_AVAILABLE:
         try:
             wandb.watch(model, log='all', log_freq=100)
@@ -204,6 +208,21 @@ def train(args, snapshot_path):
             clinical_batch = torch.stack(clinical_batch_list, dim=0).cuda()
 
             optimizer.zero_grad()
+
+            with autocast(enabled=args.autocast):
+                outputs = model(volume_batch, clinical_batch)
+                outputs_soft = torch.softmax(outputs, dim=1)
+                loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
+                loss = loss_dice
+
+            # backward pass
+            if args.autocast:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             outputs = model(volume_batch, clinical_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
