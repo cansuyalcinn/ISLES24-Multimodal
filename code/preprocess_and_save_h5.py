@@ -71,8 +71,11 @@ def process_patient(patient_name: str, paths_raw: str, paths_deriv: str, out_dir
             ('tmax', os.path.join(paths_deriv, patient_name, 'ses-01', 'perfusion-maps', f'{patient_name}_ses-01_space-ncct_tmax.nii.gz')),
             ('cta', os.path.join(paths_deriv, patient_name, 'ses-01', f'{patient_name}_ses-01_space-ncct_cta.nii.gz')),
         ]
-
-        gt_path = os.path.join(paths_deriv, patient_name, 'ses-02', f'{patient_name}_ses-02_space-ncct_lesion-msk.nii.gz')
+        
+        if args.test_set:
+            gt_path = os.path.join(paths_deriv, patient_name, 'ses-02', f'{patient_name}_ses-02_ncct-masked_lesion-msk.nii.gz')
+        else:
+            gt_path = os.path.join(paths_deriv, patient_name, 'ses-02', f'{patient_name}_ses-02_space-ncct_lesion-msk.nii.gz')
 
         preproc_root = os.path.join(out_dir, 'preprocessed_data')
         h5_out_root = os.path.join(out_dir, 'h5_files_preprocessed')
@@ -215,8 +218,9 @@ def main(paths_raw: str, paths_deriv: str, out_dir: str, workers: int = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--paths_raw', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/train/raw_data')
-    parser.add_argument('--paths_derivatives', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/raw/derivatives')
+    parser.add_argument('--paths_derivatives', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/train/derivatives')
     parser.add_argument('--out_dir', type=str, required=False, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data')
     parser.add_argument('--workers', type=int, default=None)
+    parser.add_argument('--test_set', type=bool, default=False, help='test set preprocessing without gt file')
     args = parser.parse_args()
     main(args.paths_raw, args.paths_derivatives, args.out_dir, workers=args.workers)

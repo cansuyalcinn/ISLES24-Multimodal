@@ -4,7 +4,7 @@ import shutil
 from glob import glob
 import torch
 from test_3D_util import test_all_case
-from networks import unet_3D, UNet3D_withClinical, UNet3D_Clinical_DAFT
+from networks import unet_3D, UNet3D_withClinical
 import pandas as pd
 import numpy as np
 import argparse
@@ -68,9 +68,9 @@ def Inference(FLAGS):
                 print(f"Failed to load clinical file: {e}")
                 clinical_map = None
 
-        if FLAGS.daft:
-            net = UNet3D_Clinical_DAFT(n_classes=num_classes, in_channels=5, clinical_in_features=max(1, clinical_dim)).cuda()
-        else:
+        # if FLAGS.daft:
+        #     net = UNet3D_Clinical_DAFT(n_classes=num_classes, in_channels=5, clinical_in_features=max(1, clinical_dim)).cuda()
+        # else:
             net = UNet3D_withClinical(n_classes=num_classes, in_channels=5, clinical_in_features=max(1, clinical_dim)).cuda()
 
     else:

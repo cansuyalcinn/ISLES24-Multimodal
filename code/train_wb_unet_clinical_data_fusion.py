@@ -80,7 +80,7 @@ def train(args, snapshot_path):
     # --- load preprocessed clinical tabular data ---
     clinical_file = os.path.join(train_data_path, 'clinical_tabular_processed.xlsx')
     if os.path.exists(clinical_file):
-        print(f"Loading clinical data from {clinical_file}...")
+        print(f"Loading clinical data from {clinical_file}")
         try:
             clin_df = pd.read_excel(clinical_file)
             if 'patient_id' in clin_df.columns:
@@ -133,7 +133,9 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
-    # mixed precision removed: use standard FP32 training
+    
+    # start training timer
+    start_time = time.time()
 
     # Optional: watch model gradients and parameters with wandb
     if _WANDB_AVAILABLE:
@@ -330,6 +332,21 @@ def train(args, snapshot_path):
         if iter_num >= max_iterations:
             iterator.close()
             break
+        
+    # record elapsed time and save to snapshot
+    end_time = time.time()
+    elapsed = end_time - start_time
+    hrs = int(elapsed // 3600)
+    mins = int((elapsed % 3600) // 60)
+    secs = int(elapsed % 60)
+    time_str = f"{hrs}h {mins}m {secs}s ({elapsed:.2f} sec)"
+    logging.info(f"Total training time: {time_str}")
+    try:
+        with open(os.path.join(snapshot_path, 'train_time.txt'), 'w') as tf:
+            tf.write(f"Total training time: {time_str}\nSeconds: {elapsed:.2f}\n")
+    except Exception:
+        logging.exception('Failed to write train_time.txt')
+
     writer.close()
     return "Training Finished!"
 

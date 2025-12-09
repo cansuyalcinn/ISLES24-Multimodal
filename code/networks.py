@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
 from collections import OrderedDict
+from DAFT import DAFTBlock
 
 
 ## base UNet 3D model
@@ -180,57 +181,18 @@ class UNet3D_withClinical(nn.Module):
         final = self.unet.final(up1)
         return final
 
-
-class DAFT3d(nn.Module):
-    """
-    3D version of DAFT: Feature-wise affine transformation conditioned on clinical embedding.
-    Performs:  y = gamma * x + beta  
-    where gamma, beta come from the clinical embedding.
-    """
-
-    def __init__(self, feature_dim, cond_dim, hidden_dim=256):
-        super().__init__()
-
-        self.mlp = nn.Sequential(
-            nn.Linear(cond_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, feature_dim * 2)   # outputs [gamma, beta]
-        )
-
-        # # # Initialize last layer so gamma ≈ 1, beta ≈ 0 --- This initialization is optional, expected to improve training stability.
-        nn.init.zeros_(self.mlp[-1].weight)
-        nn.init.zeros_(self.mlp[-1].bias)
-        with torch.no_grad():
-            self.mlp[-1].bias[:feature_dim] = 1.0
-            self.mlp[-1].bias[feature_dim:] = 0.0
-
-
-    def forward(self, x, cond_vec):
-        """
-        x:      [B, C, D, H, W]   (bottleneck)
-        cond_vec: [B, cond_dim]   (clinical embedding)
-        """
-        B, C, D, H, W = x.shape
-
-        params = self.mlp(cond_vec)     # [B, 2*C]
-        gamma, beta = params.chunk(2, dim=1)
-
-        gamma = gamma.view(B, C, 1, 1, 1)
-        beta  = beta.view(B, C, 1, 1, 1)
-
-        return gamma * x + beta
-
-class UNet3D_Clinical_DAFT(nn.Module):
+## 3D Unet with clinical data fusion via DAFT blocks in bottleneck and each decoder level.
+# DAFT fusion before concatenating the skip connection, as in the deafult setting in HALOS paper.
+class UNet3D_withClinical_DAFT(nn.Module):
     def __init__(self, 
-                 feature_scale=4, n_classes=2, in_channels=5, 
+                 feature_scale=4, n_classes=2, in_channels=5,
                  is_deconv=True, is_batchnorm=True,
                  clinical_in_features=40,
-                 clinical_emb_dim=128,
-                 daft_hidden_dim=256):
+                 clinical_emb_dim=128):
 
         super().__init__()
 
-        # base UNet backbone
+        # Base UNet
         self.unet = unet_3D(
             feature_scale=feature_scale,
             n_classes=n_classes,
@@ -239,57 +201,97 @@ class UNet3D_Clinical_DAFT(nn.Module):
             is_batchnorm=is_batchnorm
         )
 
-        # compute bottleneck channels
-        filters = [64, 128, 256, 512, 1024]
-        filters = [int(x / feature_scale) for x in filters]
-        center_channels = filters[-1]
-
-        # clinical embedding
+        # --- Clinical MLP ---
         self.clinical_mlp = ClinicalMLP(clinical_in_features, clinical_emb_dim)
 
-        # DAFT replaces the manual fusion
-        self.daft = DAFT3d(
-            feature_dim=center_channels,
-            cond_dim=clinical_emb_dim,
-            hidden_dim=daft_hidden_dim
+        filters = [64, 128, 256, 512, 1024]
+        filters = [int(x / feature_scale) for x in filters]
+
+        # Bottleneck
+        self.daft_center = DAFTBlock(
+            in_channels=filters[-1], 
+            out_channels=filters[-1],
+            ndim_non_img=clinical_emb_dim,
+            activation="linear",
+            scale=True,
+            shift=True,
+            squeeze_factor=7
         )
 
-    def forward(self, img, clinical_vec):
+        # Upsampling layers (separate from concatenation)
+        self.up4 = nn.Upsample(scale_factor=(2, 2, 2), mode='trilinear')
+        self.up3 = nn.Upsample(scale_factor=(2, 2, 2), mode='trilinear')
+        self.up2 = nn.Upsample(scale_factor=(2, 2, 2), mode='trilinear')
+        self.up1 = nn.Upsample(scale_factor=(2, 2, 2), mode='trilinear')
 
-        # ---------------- Encoder ----------------
+        # DAFT blocks (after upsampling, before concatenation)
+        self.daft_up4 = DAFTBlock(filters[-1], filters[-1], ndim_non_img=clinical_emb_dim, activation="linear", scale=True, shift=True, squeeze_factor=7)
+        self.daft_up3 = DAFTBlock(filters[-2], filters[-2], ndim_non_img=clinical_emb_dim, activation="linear", scale=True, shift=True, squeeze_factor=7)
+        self.daft_up2 = DAFTBlock(filters[-3], filters[-3], ndim_non_img=clinical_emb_dim, activation="linear", scale=True, shift=True, squeeze_factor=7)
+        self.daft_up1 = DAFTBlock(filters[-4], filters[-4], ndim_non_img=clinical_emb_dim, activation="linear", scale=True, shift=True, squeeze_factor=7)
+
+        # Convolution layers after concatenation
+        self.conv4d = UnetConv3(filters[-1] + filters[-2], filters[-2], is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.conv3d = UnetConv3(filters[-2] + filters[-3], filters[-3], is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.conv2d = UnetConv3(filters[-3] + filters[-4], filters[-4], is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.conv1d = UnetConv3(filters[-4] + filters[0], filters[0], is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+
+
+    def forward(self, img, clinical):
+
+        # ============ ENCODER ============
         conv1 = self.unet.conv1(img)
-        maxpool1 = self.unet.maxpool1(conv1)
+        max1 = self.unet.maxpool1(conv1)
 
-        conv2 = self.unet.conv2(maxpool1)
-        maxpool2 = self.unet.maxpool2(conv2)
+        conv2 = self.unet.conv2(max1)
+        max2 = self.unet.maxpool2(conv2)
 
-        conv3 = self.unet.conv3(maxpool2)
-        maxpool3 = self.unet.maxpool3(conv3)
+        conv3 = self.unet.conv3(max2)
+        max3 = self.unet.maxpool3(conv3)
 
-        conv4 = self.unet.conv4(maxpool3)
-        maxpool4 = self.unet.maxpool4(conv4)
+        conv4 = self.unet.conv4(max3)
+        max4 = self.unet.maxpool4(conv4)
 
-        center = self.unet.center(maxpool4)
+        # ========= BOTTLENECK ============
+        center = self.unet.center(max4)
 
-        # ---------------- DAFT fusion ----------------
-        clinical_emb = self.clinical_mlp(clinical_vec)   # [B, emb_dim]
+        clinical_emb = self.clinical_mlp(clinical)
 
-        center = self.daft(center, clinical_emb)         # modulation
+        # Apply DAFT at bottleneck
+        center = self.daft_center(center, clinical_emb)
         center = self.unet.dropout1(center)
 
-        # ---------------- Decoder ----------------
-        up4 = self.unet.up_concat4(conv4, center)
-        up3 = self.unet.up_concat3(conv3, up4)
-        up2 = self.unet.up_concat2(conv2, up3)
-        up1 = self.unet.up_concat1(conv1, up2)
+        # =============== DECODER ===============
 
+        # ---- up 4 ----
+        up4 = self.up4(center)                  # upsample
+        up4 = self.daft_up4(up4, clinical_emb)  # DAFT before skip
+        up4 = torch.cat([conv4, up4], dim=1)    # concatenate skip connection
+        up4 = self.conv4d(up4)                  # conv after concat
+
+        # ---- up 3 ----
+        up3 = self.up3(up4)
+        up3 = self.daft_up3(up3, clinical_emb)
+        up3 = torch.cat([conv3, up3], dim=1)
+        up3 = self.conv3d(up3)
+
+        # ---- up 2 ----
+        up2 = self.up2(up3)
+        up2 = self.daft_up2(up2, clinical_emb)
+        up2 = torch.cat([conv2, up2], dim=1)
+        up2 = self.conv2d(up2)
+
+        # ---- up 1 ----
+        up1 = self.up1(up2)
+        up1 = self.daft_up1(up1, clinical_emb)
+        up1 = torch.cat([conv1, up1], dim=1)
+        up1 = self.conv1d(up1)
         up1 = self.unet.dropout2(up1)
 
+        # Final segmentation layer
         final = self.unet.final(up1)
+
         return final
-
-
-
 
 def weights_init_normal(m):
     classname = m.__class__.__name__

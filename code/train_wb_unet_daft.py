@@ -22,12 +22,11 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 from dataset import (ISLES24, CenterCrop, RandomCrop,
                                    RandomRotFlip, ToTensor)
-from networks import UNet3D_Clinical_DAFT
+from networks import UNet3D_withClinical_DAFT
 import pandas as pd
 # from val_3D import test_all_case
 # not using AMP autocast -> remove GradScaler/amp usage
 from utils import DiceLoss
-from torch.cuda.amp import autocast, GradScaler
 from val_3D import test_all_case
 
 # Optional Weights & Biases (wandb) integration
@@ -42,7 +41,7 @@ except Exception:
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data', help='Name of Experiment')
-parser.add_argument('--exp', type=str, default='ISLES24-Unet_DF', help='experiment_name')
+parser.add_argument('--exp', type=str, default='ISLES24-Unet_DAFT', help='experiment_name')
 parser.add_argument('--max_iterations', type=int, default=30000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
@@ -50,10 +49,7 @@ parser.add_argument('--base_lr', type=float,  default=0.01, help='segmentation n
 parser.add_argument('--patch_size', type=list,  default=[96, 96, 96], help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
 parser.add_argument('--gpu', type=str, default='0', help='GPU to use')
-parser.add_argument('--knockout_prob', type=float, default=0.2, help='Probability to randomly knockout (mask) each observed clinical feature during training')
 parser.add_argument('--fold', type=int, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
-parser.add_argument('--autocast', action='store_true',
-                    help='Enable PyTorch AMP mixed-precision training')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -84,7 +80,7 @@ def train(args, snapshot_path):
     # --- load preprocessed clinical tabular data ---
     clinical_file = os.path.join(train_data_path, 'clinical_tabular_processed.xlsx')
     if os.path.exists(clinical_file):
-        print(f"Loading clinical data from {clinical_file}...")
+        print(f"Loading clinical data from {clinical_file}")
         try:
             clin_df = pd.read_excel(clinical_file)
             if 'patient_id' in clin_df.columns:
@@ -108,7 +104,7 @@ def train(args, snapshot_path):
         clinical_map = {}
         clinical_dim = 0
 
-    model = UNet3D_Clinical_DAFT(in_channels=5, n_classes=num_classes, clinical_in_features=max(1, clinical_dim))
+    model = UNet3D_withClinical_DAFT(in_channels=5, n_classes=num_classes, clinical_in_features=max(1, clinical_dim))
 
     db_train = ISLES24(base_dir=train_data_path,
                          split='train',
@@ -137,10 +133,11 @@ def train(args, snapshot_path):
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
     model.cuda()
+    
+    # start training timer
+    start_time = time.time()
 
-    if args.autocast:
-        scaler = GradScaler()
-
+    # Optional: watch model gradients and parameters with wandb
     if _WANDB_AVAILABLE:
         try:
             wandb.watch(model, log='all', log_freq=100)
@@ -187,17 +184,26 @@ def train(args, snapshot_path):
                     vals = torch.from_numpy(arr[:n_value_feats].copy()).float()
                     masks = torch.from_numpy(arr[n_value_feats:].copy()).float() if (clinical_dim - n_value_feats) > 0 else torch.ones_like(vals)
 
-                    # apply knockout augmentation only during training
-                    p = args.knockout_prob
-                    if p > 0.0:
-                        # only candidate features that were originally observed (mask==1)
-                        can_knock = masks == 1.0
-                        if can_knock.any():
-                            rand = torch.rand_like(vals)
-                            knock = (rand < p) & can_knock
-                            if knock.any():
-                                vals[knock] = -10.0  # sentinel for missing
-                                masks[knock] = 0.0
+                    # only observed features may be knocked out
+                    observed_idx = torch.where(masks == 1.0)[0]
+                    num_obs = len(observed_idx)
+
+                    if num_obs > 0:
+                        # sample per-patient dropout ratio
+                        p = torch.rand(1).item()  # random number in [0,1]
+                        
+                        # compute number of features to drop
+                        num_drop = max(1, int(p * num_obs))  # drop at least 1
+                        
+                        # randomly pick exactly num_drop features among observed ones
+                        # torch.randperm(n) generates a random permutation of the integers from 0 to n-1, with no repeats. shuffle the indices
+                        perm = torch.randperm(num_obs)
+
+                        drop_idx = observed_idx[perm[:num_drop]]
+
+                        # apply knockout
+                        vals[drop_idx] = -10.0
+                        masks[drop_idx] = 0.0
 
                     combined = torch.cat([vals, masks], dim=0)
                     clinical_batch_list.append(combined)
@@ -208,21 +214,6 @@ def train(args, snapshot_path):
             clinical_batch = torch.stack(clinical_batch_list, dim=0).cuda()
 
             optimizer.zero_grad()
-
-            with autocast(enabled=args.autocast):
-                outputs = model(volume_batch, clinical_batch)
-                outputs_soft = torch.softmax(outputs, dim=1)
-                loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
-                loss = loss_dice
-
-            # backward pass
-            if args.autocast:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
 
             outputs = model(volume_batch, clinical_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
@@ -341,6 +332,21 @@ def train(args, snapshot_path):
         if iter_num >= max_iterations:
             iterator.close()
             break
+        
+    # record elapsed time and save to snapshot
+    end_time = time.time()
+    elapsed = end_time - start_time
+    hrs = int(elapsed // 3600)
+    mins = int((elapsed % 3600) // 60)
+    secs = int(elapsed % 60)
+    time_str = f"{hrs}h {mins}m {secs}s ({elapsed:.2f} sec)"
+    logging.info(f"Total training time: {time_str}")
+    try:
+        with open(os.path.join(snapshot_path, 'train_time.txt'), 'w') as tf:
+            tf.write(f"Total training time: {time_str}\nSeconds: {elapsed:.2f}\n")
+    except Exception:
+        logging.exception('Failed to write train_time.txt')
+
     writer.close()
     return "Training Finished!"
 
