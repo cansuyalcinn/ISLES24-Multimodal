@@ -1,14 +1,14 @@
 # ISLES24-Multimodal
 Multimodal tabular data + vision experiments in the ISLES24 challenge dataset. 
 
-1. 3D UNet (plain model)
+1. 3D UNet (plain model) --> train_wb.py
 - Inputs 5 images
 + Output: binary segmentation
 
-2. 3D UNet (plain model + concatenated tabular data)
+2. 3D UNet (plain model + concatenated tabular data) --> train_wb_unet_clinical_data_fusion.py
 - Inputs: 5 images: CTA /MTT /TMAX /CBF / CBV + Clinical data (Excel file - just normalized z-score)
 
-3. 3D UNet + DAFT clinical data
+3. 3D UNet + DAFT clinical data  --> train_wb_unet_daft.py
 - Inputs: 5 images: CTA /MTT /TMAX /CBF / CBV + Clinical data (Excel file)
 
 Dealing with missing data:
