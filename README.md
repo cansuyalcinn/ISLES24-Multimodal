@@ -6,10 +6,10 @@ Multimodal tabular data + vision experiments in ISLES24 challenge dataset.
 + Output: binary segmentation
 
 2. 3D UNet (plain model + concatenated tabular data)
-- Inputs: 6 images: CTA / NCCT /MTT /TMAX /CBF / CBV + Clinical data (excel file - just normalized z-score)
+- Inputs: 6 images: CTA /MTT /TMAX /CBF / CBV + Clinical data (excel file - just normalized z-score)
 
 3. 3D UNet + DAFT clinical data
-- Inputs: 6 images: CTA / NCCT /MTT /TMAX /CBF / CBV + Clinical data (excel file)
+- Inputs: 6 images: CTA /MTT /TMAX /CBF / CBV + Clinical data (excel file)
 
 Dealing with missing data:
 
