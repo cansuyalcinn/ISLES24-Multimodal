@@ -164,23 +164,39 @@ def main():
             metric = calculate_metric_percase(pred == 1, label == 1)
             total_metric[0, :] += metric
 
+            # change the shape of the pred array from (z,y,x) to (x,y,z) for saving
+            pred = np.transpose(pred, (2, 1, 0))
+
             fout.writelines(f"{ids},{metric[0]},{metric[1]},{metric[2]},{metric[3]}\n")
+
+            original_ncct_path = f"/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/challenge_test_set/test/raw_data/{pid}/ses-01"
+            ncct_img = sitk.ReadImage(os.path.join(original_ncct_path, f'{pid}_ses-01_ncct.nii.gz'))
+            # use the original spacing and origin
+            spacing = ncct_img.GetSpacing()
+            origin = ncct_img.GetOrigin()
+            direction = ncct_img.GetDirection()
 
             # save outputs
             pred_itk = sitk.GetImageFromArray(pred.astype(np.uint8))
-            pred_itk.SetSpacing((1.0, 1.0, 1.0))
+            pred_itk.SetSpacing(spacing)
+            pred_itk.SetOrigin(origin)
+            pred_itk.SetDirection(direction)
             sitk.WriteImage(pred_itk, os.path.join(FLAGS.out_dir, f"{ids}_pred.nii.gz"))
 
-            img_itk = sitk.GetImageFromArray(image)
-            img_itk.SetSpacing((1.0, 1.0, 1.0))
-            sitk.WriteImage(img_itk, os.path.join(FLAGS.out_dir, f"{ids}_img.nii.gz"))
+            # # img_itk = sitk.GetImageFromArray(image)
+            # # img_itk.SetSpacing(spacing)
+            # # img_itk.SetOrigin(origin)
+            # # img_itk.SetDirection(direction)
+            # # sitk.WriteImage(img_itk, os.path.join(FLAGS.out_dir, f"{ids}_img.nii.gz"))
 
-            lab_itk = sitk.GetImageFromArray(label.astype(np.uint8))
-            lab_itk.SetSpacing((1.0, 1.0, 1.0))
-            sitk.WriteImage(lab_itk, os.path.join(FLAGS.out_dir, f"{ids}_lab.nii.gz"))
+            # # lab_itk = sitk.GetImageFromArray(label.astype(np.uint8))
+            # # lab_itk.SetSpacing(spacing)
+            # # lab_itk.SetOrigin(origin)
+            # # lab_itk.SetDirection(direction)
+            # # sitk.WriteImage(lab_itk, os.path.join(FLAGS.out_dir, f"{ids}_lab.nii.gz"))
 
             # save average probability map
-            np.savez_compressed(os.path.join(FLAGS.out_dir, f"{ids}.npz"), probabilities=avg_prob.astype(np.float32))
+            # # np.savez_compressed(os.path.join(FLAGS.out_dir, f"{ids}.npz"), probabilities=avg_prob.astype(np.float32))
 
         # write mean
         mean_metrics = (total_metric[0, :] / len(test_files))
