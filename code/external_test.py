@@ -164,8 +164,9 @@ def main():
             metric = calculate_metric_percase(pred == 1, label == 1)
             total_metric[0, :] += metric
 
-            # change the shape of the pred array from (z,y,x) to (x,y,z) for saving
+            # change the shape of the pred and label arrays from nibabel (i,j,k) to SimpleITK (k,j,i) for saving
             pred = np.transpose(pred, (2, 1, 0))
+            label_save = np.transpose(label.astype(np.uint8), (2, 1, 0))
 
             fout.writelines(f"{ids},{metric[0]},{metric[1]},{metric[2]},{metric[3]}\n")
 
@@ -183,17 +184,17 @@ def main():
             pred_itk.SetDirection(direction)
             sitk.WriteImage(pred_itk, os.path.join(FLAGS.out_dir, f"{ids}_pred.nii.gz"))
 
+            lab_itk = sitk.GetImageFromArray(label_save)
+            lab_itk.SetSpacing(spacing)
+            lab_itk.SetOrigin(origin)
+            lab_itk.SetDirection(direction)
+            sitk.WriteImage(lab_itk, os.path.join(FLAGS.out_dir, f"{ids}_lab.nii.gz"))
+
             # # img_itk = sitk.GetImageFromArray(image)
             # # img_itk.SetSpacing(spacing)
             # # img_itk.SetOrigin(origin)
             # # img_itk.SetDirection(direction)
             # # sitk.WriteImage(img_itk, os.path.join(FLAGS.out_dir, f"{ids}_img.nii.gz"))
-
-            # # lab_itk = sitk.GetImageFromArray(label.astype(np.uint8))
-            # # lab_itk.SetSpacing(spacing)
-            # # lab_itk.SetOrigin(origin)
-            # # lab_itk.SetDirection(direction)
-            # # sitk.WriteImage(lab_itk, os.path.join(FLAGS.out_dir, f"{ids}_lab.nii.gz"))
 
             # save average probability map
             # # np.savez_compressed(os.path.join(FLAGS.out_dir, f"{ids}.npz"), probabilities=avg_prob.astype(np.float32))

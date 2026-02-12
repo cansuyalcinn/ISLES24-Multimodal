@@ -46,7 +46,7 @@ def evaluate_folder(results_path, out_csv):
 
         f1_percent = float(f1) * 100.0
 
-        voxel_volume = np.prod(gt_img.header.get_zooms()) / 1000.0
+        voxel_volume = np.prod(gt_img.header.get_zooms()) / 1000.0  # mm³ → ml
         avd = float(eval_utils.compute_absolute_volume_difference(gt, pred, voxel_volume))
 
         rows.append([

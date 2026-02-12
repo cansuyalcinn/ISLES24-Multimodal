@@ -141,7 +141,8 @@ def cal_metric(gt, pred):
 
 def test_all_case(net, base_dir, test_list="test_list.txt", model = "unet_3D",
                   num_classes=4, patch_size=(48, 160, 160), stride_xy=32, stride_z=24, 
-                  test_save_path=None, model_name=None, clinical=False, clinical_map=None, clinical_file=None):
+                  test_save_path=None, model_name=None, clinical=False, clinical_map=None, clinical_file=None,
+                  original_img_dir=None):
     
     with open(base_dir + '/splits' + '/{}'.format(test_list), 'r') as f:
         image_list = f.readlines()
@@ -192,18 +193,49 @@ def test_all_case(net, base_dir, test_list="test_list.txt", model = "unet_3D",
             
             f.writelines("{},{},{},{},{}\n".format(ids, metric[0], metric[1], metric[2], metric[3]))
 
-            pred_itk = sitk.GetImageFromArray(prediction.astype(np.uint8))
-            pred_itk.SetSpacing((1.0, 1.0, 1.0))
+            # --- Load original NCCT for correct spatial metadata ---
+            ref_spacing = (1.0, 1.0, 1.0)
+            ref_origin = (0.0, 0.0, 0.0)
+            ref_direction = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+            if original_img_dir is not None:
+                ref_ncct_path = os.path.join(original_img_dir, pid, 'ses-01',
+                                             f'{pid}_ses-01_ncct.nii.gz')
+                if os.path.exists(ref_ncct_path):
+                    ref_img = sitk.ReadImage(ref_ncct_path)
+                    ref_spacing = ref_img.GetSpacing()
+                    ref_origin = ref_img.GetOrigin()
+                    ref_direction = ref_img.GetDirection()
+                else:
+                    print(f"  WARNING: reference NCCT not found at {ref_ncct_path}, "
+                          f"saving with default (1,1,1) spacing.")
+
+            # --- Transpose from nibabel (i,j,k) to SimpleITK (k,j,i) order ---
+            pred_arr = np.transpose(prediction.astype(np.uint8), (2, 1, 0))
+            lab_arr = np.transpose(label.astype(np.uint8), (2, 1, 0))
+            if image.ndim == 4:
+                img_arr = np.transpose(image[-1], (2, 1, 0))  # save last channel (CTA) as representative
+            else:
+                img_arr = np.transpose(image, (2, 1, 0))
+
+            pred_itk = sitk.GetImageFromArray(pred_arr)
+            pred_itk.SetSpacing(ref_spacing)
+            pred_itk.SetOrigin(ref_origin)
+            pred_itk.SetDirection(ref_direction)
             sitk.WriteImage(pred_itk, test_save_path +
                             "/{}_pred.nii.gz".format(ids))
 
-            img_itk = sitk.GetImageFromArray(image)
-            img_itk.SetSpacing((1.0, 1.0, 1.0))
+            img_itk = sitk.GetImageFromArray(img_arr.astype(np.float32))
+            img_itk.SetSpacing(ref_spacing)
+            img_itk.SetOrigin(ref_origin)
+            img_itk.SetDirection(ref_direction)
             sitk.WriteImage(img_itk, test_save_path +
                             "/{}_img.nii.gz".format(ids))
 
-            lab_itk = sitk.GetImageFromArray(label.astype(np.uint8))
-            lab_itk.SetSpacing((1.0, 1.0, 1.0))
+            lab_itk = sitk.GetImageFromArray(lab_arr)
+            lab_itk.SetSpacing(ref_spacing)
+            lab_itk.SetOrigin(ref_origin)
+            lab_itk.SetDirection(ref_direction)
             sitk.WriteImage(lab_itk, test_save_path +
                             "/{}_lab.nii.gz".format(ids))
             

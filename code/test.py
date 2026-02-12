@@ -20,6 +20,7 @@ parser.add_argument('--daft', action='store_true', help='Enable DAFT model evalu
 parser.add_argument('--clinical_file', type=str, default='/media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx', help='Path to clinical_tabular_processed.xlsx -- /media/cansu/DiskSpace/Cansu/ISLES24/ISLES24-Multimodal/data/clinical_tabular_processed.xlsx')
 parser.add_argument('--fold', type=str, default=None, help='Cross-validation fold index (0..4). If provided uses fold-specific split files.')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed for the model setting but for the data we use a different seed.')
+parser.add_argument('--original_img_dir', type=str, default=None, help='Directory with original NIfTI images for correct spacing/origin/direction. E.g. /path/to/train/derivatives or /path/to/challenge_test_set/test/derivatives')
 
 def Inference(FLAGS):
 
@@ -82,7 +83,8 @@ def Inference(FLAGS):
 
     avg_metric = test_all_case(net, base_dir=FLAGS.root_path, test_list=test_files, num_classes=num_classes,
                                patch_size=(96, 96, 96), stride_xy=64, stride_z=64, test_save_path=test_save_path, model=FLAGS.model,
-                               clinical=FLAGS.clinical, clinical_map=clinical_map, clinical_file=FLAGS.clinical_file)
+                               clinical=FLAGS.clinical, clinical_map=clinical_map, clinical_file=FLAGS.clinical_file,
+                               original_img_dir=FLAGS.original_img_dir)
     return avg_metric, mode
 
 

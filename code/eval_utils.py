@@ -38,7 +38,7 @@ def compute_absolute_volume_difference(im1, im2, voxel_size):
 
     im1 = np.asarray(im1).astype(bool)
     im2 = np.asarray(im2).astype(bool)
-    voxel_size = voxel_size.astype(float)
+    voxel_size = float(voxel_size)
 
     if im1.shape != im2.shape:
         warnings.warn(
